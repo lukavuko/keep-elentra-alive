@@ -45,7 +45,7 @@ Built and tested in **Brave**, but it's a plain MV3 extension using only standar
 
 #### 🔒 Does this program store my credentials?
 
-> **No.** It uses what's called a browser cookie. Elentra sends you a cookie after you "shake its hand" logging in. Cookies are randomly generated tokens websites use to remember you, and they typically expire after a set amount of time (~15 minutes), forcing you to log in again or refresh the session. This program stores only the current cookie in use, in a local `.elentra/` folder in the same directory the program runs from — it's excluded from version control via `.gitignore` and never leaves your machine except to Elentra itself.
+> **No.** It uses what's called a browser cookie. Elentra sends you a cookie after you "shake its hand" logging in. Cookies are randomly generated tokens websites use to remember you, and they eventually expire, forcing you to log in again or refresh the session. This program stores only the current session cookies in use — outside the project folder, in `%LOCALAPPDATA%\elentra-keepalive\cookies.json` on Windows (or `~/.local/state/elentra-keepalive/cookies.json` on Linux/Mac) — and they never leave your machine except to Elentra itself.
 
 #### 🛡️ Security notes
 
@@ -68,4 +68,3 @@ Portions of this project (code, debugging, and documentation) were developed wit
 ## 📄 License
 
 [MIT](LICENSE) — do whatever you like with this, no warranty provided.
-
