@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Elentra Keepalive Cookie Bridge",
+  "version": "1.0.0",
+  "description": "Pushes your UBC Elentra session cookies to the local keepalive script on 127.0.0.1 so you can stay logged in!",
+  "permissions": ["cookies", "alarms"],
+  "host_permissions": [
+    "https://ubc.elentra.cloud/*",
+    "https://authentication.ubc.ca/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  }
+}

@@ -1,0 +1,85 @@
+---
+references:
+  - "File: /elentra_keepalive.py"
+generationTime: 2026-09-01T04:02:07.763Z
+---
+flowchart TD
+    A["main()"] --> B["_setup_logging(args.log_file)"]
+    B --> C["Register SIGINT/SIGTERM handlers"]
+    C --> D["run_auto_loop(args)"]
+
+    D --> E["start_listener(host, port)"]
+    E --> F["ThreadingHTTPServer.serve_forever()"]
+
+    D --> G{"args.cookie_file exists?"}
+    G -->|Yes| H["load_cookie_objects(path)"]
+    H --> I["_store.set(seed)"]
+    I --> J["log.info - Warm-started"]
+    G -->|No| K["Skip warm start"]
+
+    D --> L["make_session()"]
+    L --> M["_prevent_sleep()"]
+
+    M --> N["state = \"acquiring\""]
+    N --> O["while not _stop"]
+
+    O --> P{"SESSION_COOKIE in cookies?"}
+    P -->|"No"| Q["log warning + wait(ACQUIRE_INTERVAL)"]
+    Q --> O
+
+    P -->|"Yes"| R["session.cookies = build_jar(objs)"]
+    R --> S["resp = session.get(args.url, allow_redirects=True)"]
+    S --> T{"RequestException?"}
+    T -->|"Yes"| U["consecutive_errors += 1"]
+    U --> V["wait(min(30 * errors, 300))"]
+    V --> O
+
+    T -->|"No"| W{"session_is_alive(resp)?"}
+    W -->|"No"| X["state = \"acquiring\""]
+    X --> Y["wait(ACQUIRE_INTERVAL)"]
+    Y --> O
+
+    W -->|"Yes"| Z["state = \"alive\""]
+    Z --> AA["persist(objs, cookie_file)"]
+    AA --> AB["_store.wait(next_delay(interval))"]
+    AB --> O
+
+    subgraph Extension["Browser extension: background.js (MV3 service worker)"]
+        EX1["chrome.cookies.onChanged / alarms 'push' (1 min) / onInstalled / onStartup"]
+        EX2["gather() - chrome.cookies.getAll for ubc.elentra.cloud, authentication.ubc.ca"]
+        EX3["push(reason) - fetch POST http://127.0.0.1:8765/cookies\n{token, reason, cookies}"]
+    end
+
+    EX1 --> EX2 --> EX3
+
+    subgraph Listener["Listener thread"]
+        F1["_PushHandler.do_POST()"]
+        F2{"Origin valid and path == /cookies?"}
+        F3{"PUSH_TOKEN valid?"}
+        F4{"cookies is list of dicts?"}
+        F5["_store.set(cookies)"]
+        F6["HTTP 200"]
+    end
+
+    EX3 -->|"HTTP POST"| F1
+    F --> F1
+    F1 --> F2
+    F2 -->|"Yes"| F3
+    F3 -->|"Yes"| F4
+    F4 -->|"Yes"| F5
+    F5 --> F6
+
+    F5 --> C1["CookieStore.set(cookies)"]
+    C1 --> C2{"cookies changed?"}
+    C2 -->|"Yes"| C3["_event.set()"]
+    C2 -->|"No"| C4["No wake signal"]
+
+    O --> D1["_store.get()"]
+    D1 --> P
+    Q --> D1
+    AB --> D1
+
+    style A fill:#dfefff,stroke:#333,stroke-width:1px
+    style O fill:#e7f7e7,stroke:#333,stroke-width:1px
+    style Listener fill:#fff4d6,stroke:#333,stroke-width:1px
+    style Extension fill:#f3e0ff,stroke:#333,stroke-width:1px

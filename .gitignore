@@ -1,0 +1,15 @@
+# Cookie store — contains live session cookie values, never commit
+.elentra/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
