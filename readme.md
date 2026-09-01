@@ -10,14 +10,14 @@ As long as you're connected to the internet and your laptop isn't asleep, it pre
 
 0. **Install [Python](https://www.python.org/downloads/latest/python3.13/)**
 
-1. **Download** the contents of this [repository](https://github.com/lukavuko/keep-elentra-alive/archive/refs/heads/master.zip) and export it if compressed.
+1. **`git clone`** or directly **download and unzip** the contents of this [repository](https://github.com/lukavuko/keep-elentra-alive/archive/refs/heads/master.zip).
 
 2. **Add the extension to your browser**: visit [`brave://extensions`](brave://extensions) or [`chrome://extensions`](chrome://extensions)
    - → enable Developer mode
    - → click **Load unpacked**
    - → select the `brave-extension` folder
 
-3. **Start** the script any time by double-clicking `run-keepalive.bat` on Windows, or on macOS by running `chmod +x run-keepalive.sh` once and then `./run-keepalive.sh`, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
+3. **Start** the script any time by double-clicking `run-keepalive.bat` on Windows or `run-keepalive-for-macOS.command` on macOS, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
 
 ## ⚙️ How does this program work?
 
