@@ -12,13 +12,12 @@ As long as you're connected to the internet and your laptop isn't asleep, it pre
 
 1. **Download** the contents of this [repository](https://github.com/lukavuko/keep-elentra-alive/archive/refs/heads/master.zip) and export it if compressed.
 
-3. **Add the extension to your browser**: visit [`brave://extensions`](brave://extensions) or [`chrome://extensions`](chrome://extensions) 
-   - → enable Developer mode 
+2. **Add the extension to your browser**: visit [`brave://extensions`](brave://extensions) or [`chrome://extensions`](chrome://extensions)
+   - → enable Developer mode
    - → click **Load unpacked**
    - → select the `brave-extension` folder
 
-5. **Start** the script any time by double-clicking `run-keepalive.bat` and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
-
+3. **Start** the script any time by double-clicking `run-keepalive.bat` on Windows, or on macOS by running `chmod +x run-keepalive.sh` once and then `./run-keepalive.sh`, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
 
 ## ⚙️ How does this program work?
 
@@ -38,8 +37,6 @@ Built and tested in **Brave**, but it's a plain MV3 extension using only standar
 - Python 3.9+
 - [`requests`](https://pypi.org/project/requests/) — install with `pip install requests`
 - A Chromium-based browser (Brave, Chrome, Edge, etc.) to run the companion extension
-
-
 
 ## 🤔 Considerations
 

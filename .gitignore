@@ -1,5 +1,6 @@
 # Cookie store — contains live session cookie values, never commit
 .elentra/
+.serena/
 
 # Python
 __pycache__/
