@@ -3,7 +3,7 @@
 elentra_keepalive.py — keep a UBC Elentra session from idling out.
 
 You log in ONCE in your browser (CWL + MFA). This script borrows that session
-and pokes a cheap authenticated page every ~10 minutes so the server never marks
+and pokes a cheap authenticated page every ~15 minutes so the server never marks
 you idle. It never sees, stores, or transmits your credentials.
 
 A companion Brave extension (in ./brave-extension) watches your Elentra
@@ -14,7 +14,9 @@ them. You just:
     2. Run:  python elentra_keepalive.py
 
 Start it any time — logged in or out. While no valid session is available
-it warns and re-checks every 10s.
+it re-checks every 10s. If the Elentra session dies but your SSO session is
+still valid, it asks the extension to silently re-login by loading the Elentra
+login URL in a background tab (override with ELENTRA_LOGIN_URL / --login-url).
 
 Usage:
     python elentra_keepalive.py
@@ -52,9 +54,9 @@ PING_URL = f"{BASE}/dashboard"
 
 IDP_HOST = "authentication.ubc.ca"
 
-DEFAULT_INTERVAL = 600  # keepalive ping cadence once the session is alive
+DEFAULT_INTERVAL = 900  # keepalive ping cadence once the session is alive
 MIN_INTERVAL = 60  # refuse anything faster; avoids hammering Elentra
-JITTER = 250  # max jitter (s), clamped to a quarter of the interval
+JITTER = 180  # max jitter (s), clamped to a quarter of the interval
 TIMEOUT = 25
 
 ACQUIRE_INTERVAL = 10  # re-check cadence while waiting for a valid session
