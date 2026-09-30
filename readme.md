@@ -64,7 +64,7 @@ Built and tested in **Brave**, but it's a plain MV3 extension using only standar
 
 > The local python listener binds to `127.0.0.1` only — nothing off your machine can reach it. Every cookie the extension pushes is **validated against Elentra before being adopted**, so a stray or forged request can't do anything to a working session.
 >
-> The extension similarly only ever talks to `127.0.0.1`. It sends your cookie nowhere else.
+> The extension only sends your cookies to `127.0.0.1`, nowhere else. The only other thing it does is the silent re-login tab, and that is hard-limited to `https://ubc.elentra.cloud`.
 
 #### 🔋Battery Usage
 
