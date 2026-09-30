@@ -440,17 +440,6 @@ def lock_down(path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # Session checks / persistence
 # --------------------------------------------------------------------------- #
-def check_expected_cookies(cookies: dict[str, str]) -> None:
-    """Warn if either half of the dual session is missing."""
-    if SESSION_COOKIE not in cookies:
-        log.warning("No '%s' cookie — the Elentra app session is missing.", SESSION_COOKIE)
-    # if not any(k.startswith("SimpleSAML") for k in cookies):
-    #     log.warning(
-    #         "No SimpleSAML* cookie — the SSO session is missing, so you'll get "
-    #         "bounced to login as soon as Elentra's session rotates."
-    #     )
-
-
 def session_is_alive(resp: requests.Response) -> bool:
     if resp.status_code in (401, 403) or resp.status_code >= 500:
         return False
