@@ -237,7 +237,7 @@ def _handle_signal(signum, _frame):
         os._exit(1)
     _stop = True
     _store.wake()  # break any wait immediately
-    log.info("Signal %s received — shutting down after current cycle (press again to force quit).", signum)
+    log.info("Stopping... (press Ctrl+C again to force quit)")
 
 
 # --------------------------------------------------------------------------- #
