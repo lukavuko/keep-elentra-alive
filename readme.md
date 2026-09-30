@@ -30,11 +30,19 @@ Two moving parts:
 1. **Browser extension** — `brave-extension/`
    An MV3 extension that waits for and reads your Elentra + SSO cookies (including httpOnly ones). Once available, it pushes them to your local listener at `127.0.0.1:8765`.
 2. **Python script** — `elentra_keepalive.py`
-   Listens on `127.0.0.1:8765` until a valid cookie is received. Once validated, it pings the Elentra dashboard every ~10 minutes (± a few minutes of jitter) to keep the session warm. Without a live cookie, it just keeps listening for one.
+   Listens on `127.0.0.1:8765` until a valid cookie is received. Once validated, it pings the Elentra dashboard every ~15 minutes (± up to 3 minutes of jitter) to keep the session warm. Without a live cookie, it just keeps listening for one.
+
+The terminal only prints a line when something changes (logged in, expired, network trouble); routine pings just update a single status line at the bottom. The screen is cleared each time you're logged back in.
+
+#### 🔁 Silent re-login
+
+If your Elentra session ends but your CWL (SSO) session is still valid, the script asks the extension to open Elentra in a **background tab** for a few seconds. The browser completes the SSO round trip on its own, with no password or MFA, and the tab closes itself. If that doesn't work, you'll see *"Silent re-login didn't work — please log in to Elentra in Brave."* It tries once each time you're logged out.
+
+The page it loads defaults to `https://ubc.elentra.cloud/`. To use a different one, set the `ELENTRA_LOGIN_URL` environment variable or pass `--login-url`. It must be an `https://ubc.elentra.cloud/...` address; the extension refuses to open anything else.
 
 ## 🌐 Browser support
 
-Built and tested in **Brave**, but it's a plain MV3 extension using only standard `chrome.*` APIs — no Brave-specific behavior. It loads and runs the same way in **Chrome** (and any other Chromium-based browser) via `chrome://extensions` → Developer mode → Load unpacked. Firefox is not currently supported by the extension (its cookie APIs differ), though the script's `--browser firefox` flag can read Firefox's cookie store directly since Firefox doesn't use App-Bound Encryption.
+Built and tested in **Brave**, but it's a plain MV3 extension using only standard `chrome.*` APIs — no Brave-specific behavior. It loads and runs the same way in **Chrome** (and any other Chromium-based browser) via `chrome://extensions` → Developer mode → Load unpacked. Firefox is not supported yet.
 
 ## 📋 Requirements
 
