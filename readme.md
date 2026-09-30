@@ -36,7 +36,7 @@ The terminal only prints a line when something changes (logged in, expired, netw
 
 #### 🔁 Silent re-login
 
-If your Elentra session ends but your CWL (SSO) session is still valid, the script asks the extension to open Elentra in a **background tab** for a few seconds. The browser completes the SSO round trip on its own, with no password or MFA, and the tab closes itself. If that doesn't work, you'll see *"Silent re-login didn't work — please log in to Elentra in Brave."* It tries once each time you're logged out.
+If your Elentra session ends but your CWL (SSO) session is still valid, the script asks the extension to open Elentra in a **background tab** for a few seconds. The browser completes the SSO round trip on its own, with no password or MFA, and the tab closes itself. If that doesn't work, you'll see _"Silent re-login didn't work — please log in to Elentra in Brave."_ It tries once each time you're logged out.
 
 The page it loads defaults to `https://ubc.elentra.cloud/`. To use a different one, set the `ELENTRA_LOGIN_URL` environment variable or pass `--login-url`. It must be an `https://ubc.elentra.cloud/...` address; the extension refuses to open anything else.
 
@@ -68,7 +68,7 @@ Built and tested in **Brave**, but it's a plain MV3 extension using only standar
 
 #### 🔋Battery Usage
 
-> **Little to none**. This is a lightweight python script that pings every 10 or so minutes, running directly out of terminal.
+> **Little to none**. This is a lightweight python script that pings every 15 or so minutes, running directly out of terminal.
 
 ## ⚠️ Disclaimer
 
