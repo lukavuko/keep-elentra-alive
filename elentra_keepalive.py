@@ -223,7 +223,7 @@ def _prevent_sleep() -> None:
     """Ask Windows not to sleep while this process runs."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        log.info("Sleep prevention is active (SetThreadExecutionState). Remember to close me  or i will keep the system awake.")
+        log.info("Keeping this PC awake while running — close me when you're done.")
 
 
 _sigint_count = 0
