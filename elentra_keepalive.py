@@ -563,8 +563,10 @@ def run_auto_loop(args) -> int:
             note(logging.WARNING, "Elentra session expired." if SESSION_COOKIE in flat else "Logged out of Elentra in the browser.")
         state = _store.state = "waiting"
 
-        if not objs:
-            note(logging.WARNING, "Waiting for the browser extension — log in to Elentra in Brave.")
+        if objs is None:
+            note(logging.WARNING, "Waiting for the browser extension — is it loaded in Brave?")
+        elif not objs:
+            note(logging.WARNING, "Waiting for you to log in to Elentra in Brave.")
         elif refresh_at is None:
             # Once per waiting spell: if the SSO session is still valid, loading
             # Elentra in a background tab logs back in without a password or MFA.
