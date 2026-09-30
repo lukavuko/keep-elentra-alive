@@ -378,8 +378,16 @@ class _PushHandler(BaseHTTPRequestHandler):
         names = ", ".join(sorted({c.get("name", "?") for c in cookies})) or "(none)"
         log.debug("Push received (%s): %d cookie(s): %s", payload.get("reason", "?"), len(cookies), names)
 
+        reply = {"state": _store.state}
+        action = _store.take_action()
+        if action:
+            reply["action"] = action
+        body = json.dumps(reply).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):  # silence default stderr access log
         return
