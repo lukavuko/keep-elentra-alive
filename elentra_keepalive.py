@@ -588,6 +588,7 @@ def main() -> int:
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help=f"Keepalive ping cadence in seconds")
     ap.add_argument("--url", default=PING_URL, help="Authenticated URL to ping")
     ap.add_argument("--sso-url", help="Optional second URL to keep the SSO session warm")
+    ap.add_argument("--login-url", default=LOGIN_URL, help="Elentra URL the extension loads to silently re-login (env: ELENTRA_LOGIN_URL)")
     ap.add_argument("--log-file", type=Path)
     args = ap.parse_args()
     if args.interval < MIN_INTERVAL:
