@@ -250,6 +250,17 @@ class CookieStore:
         self._lock = threading.Lock()
         self._event = threading.Event()
         self._cookies: list[dict] | None = None  # list of {name,value,domain,path,...}
+        self._action: dict | None = None  # one-shot instruction for the extension
+        self.state = "waiting"  # reported to the extension for its toolbar badge
+
+    def request_refresh(self, url: str) -> None:
+        with self._lock:
+            self._action = {"type": "refresh", "url": url}
+
+    def take_action(self) -> dict | None:
+        with self._lock:
+            action, self._action = self._action, None
+            return action
 
     def set(self, cookies: list[dict]) -> None:
         with self._lock:
