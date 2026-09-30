@@ -494,7 +494,7 @@ def run_auto_loop(args) -> int:
         try:
             seed = load_cookie_objects(args.cookie_file)
             _store.set(seed)
-            log.info("Warm-started from %s (%d cookie(s)); will re-validate.", args.cookie_file, len(seed))
+            log.debug("Warm-started from %s (%d cookie(s)); will re-validate.", args.cookie_file, len(seed))
         except Exception as exc:  # noqa: BLE001 — best effort
             log.debug("Warm start skipped: %s", exc)
 
