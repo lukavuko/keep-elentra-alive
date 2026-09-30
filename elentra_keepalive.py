@@ -501,10 +501,17 @@ def run_auto_loop(args) -> int:
     session = make_session()
     _prevent_sleep()
 
-    state = "acquiring"
-    consecutive_errors = 0
-    acquire_ticks = 0
-    log.warning("Waiting for a valid Elentra session from Brave (re-checking every %ds)...", ACQUIRE_INTERVAL)
+    state = ""  # "" (just started), "alive", or "waiting"
+    errors = 0
+    refresh_at: float | None = None  # when this waiting spell's silent refresh was requested
+    last_note = ""
+
+    def note(level: int, msg: str) -> None:
+        """Log only when the message changes, so waiting doesn't repeat itself."""
+        nonlocal last_note
+        if msg != last_note:
+            log.log(level, msg)
+            last_note = msg
 
     # Warm start seeds the store, which marks the event "changed" — drain it so
     # we don't fire an extra ping the instant the loop starts.
@@ -514,55 +521,63 @@ def run_auto_loop(args) -> int:
         objs = _store.get()
         flat = cookies_from_objects(objs) if objs else {}
 
-        if SESSION_COOKIE not in flat:
-            # Nothing to validate yet (logged out, or extension not loaded).
-            if state == "alive":
-                log.warning("Elentra session gone — re-acquiring (checking every %ds).", ACQUIRE_INTERVAL)
-                state = "acquiring"
-                acquire_ticks = 0
-            acquire_ticks += 1
-            if acquire_ticks == 1 or acquire_ticks % 6 == 0:  # throttle: ~every 60s
-                log.warning("No '%s' cookie yet — log in to Elentra in Brave. Still waiting...", SESSION_COOKIE)
-            _store.wait(ACQUIRE_INTERVAL)
+        alive = False
+        if SESSION_COOKIE in flat:
+            # Rebuilt from the browser's cookies every time (dropping anything the
+            # server set on our last request): the point is to keep the *browser's*
+            # session warm, not to drift onto a session only this script holds.
+            session.cookies = build_jar(objs)
+            try:
+                resp = session.get(args.url, timeout=TIMEOUT, allow_redirects=True)
+                if args.sso_url:
+                    session.get(args.sso_url, timeout=TIMEOUT, allow_redirects=True)
+            except requests.RequestException as exc:
+                errors += 1
+                delay = min(30 * errors, 300)
+                if errors == 1:
+                    log.warning("Can't reach Elentra (%s) — retrying.", type(exc).__name__)
+                else:
+                    _status(f"Can't reach Elentra — {errors} failed attempts, retrying in {delay}s")
+                _store.wait(delay)
+                continue
+            if errors:
+                log.info("Connection to Elentra restored.")
+                errors = 0
+            alive = session_is_alive(resp)
+
+        if alive:
+            if state != "alive":
+                _clear_screen()
+                log.info("Logged in to Elentra — keepalive active, pinging every ~%d min.", round(args.interval / 60))
+                state = _store.state = "alive"
+                refresh_at = None
+                last_note = ""
+            persist(objs, args.cookie_file)
+            delay = next_delay(args.interval)
+            _status(f"Session alive · last ping {time.strftime('%H:%M')} · next ~{time.strftime('%H:%M', time.localtime(time.time() + delay))}")
+            _store.wait(delay)  # a fresh push (re-login) wakes us early
             continue
 
-        session.cookies = build_jar(objs)
-        try:
-            resp = session.get(args.url, timeout=TIMEOUT, allow_redirects=True)
-            if args.sso_url:
-                session.get(args.sso_url, timeout=TIMEOUT, allow_redirects=True)
-        except requests.RequestException as exc:
-            consecutive_errors += 1
-            log.warning("Request failed (%d in a row): %s", consecutive_errors, exc)
-            _store.wait(min(30 * consecutive_errors, 300))
-            continue
-        consecutive_errors = 0
+        if state == "alive":
+            _status("")
+            note(logging.WARNING, "Elentra session expired." if SESSION_COOKIE in flat else "Logged out of Elentra in the browser.")
+        state = _store.state = "waiting"
 
-        if not session_is_alive(resp):
-            if state == "alive":
-                log.warning("Session expired (bounced to %s) — re-acquiring every %ds.", resp.url, ACQUIRE_INTERVAL)
-            else:
-                acquire_ticks += 1
-                if acquire_ticks == 1 or acquire_ticks % 6 == 0:
-                    log.warning("Pushed cookie isn't a live session yet (finish logging in). Still waiting...")
-            state = "acquiring"
-            _store.wait(ACQUIRE_INTERVAL)
-            continue
-
-        # Alive.
-        if state != "alive":
-            log.info("Session ACQUIRED — logged in. Keepalive active (ping every %ds).", args.interval)
-            check_expected_cookies(flat)
-            state = "alive"
-            acquire_ticks = 0
-        else:
-            log.info("Session alive (HTTP %s, %d bytes).", resp.status_code, len(resp.content))
-
-        persist(objs, args.cookie_file)
-        _store.wait(next_delay(args.interval))  # a fresh push (re-login) wakes us early
+        if not objs:
+            note(logging.WARNING, "Waiting for the browser extension — log in to Elentra in Brave.")
+        elif refresh_at is None:
+            # Once per waiting spell: if the SSO session is still valid, loading
+            # Elentra in a background tab logs back in without a password or MFA.
+            _store.request_refresh(args.login_url)
+            refresh_at = time.monotonic()
+            note(logging.WARNING, "Not logged in — trying a silent re-login in the background...")
+        elif time.monotonic() - refresh_at > REFRESH_WINDOW:
+            note(logging.WARNING, "Silent re-login didn't work — please log in to Elentra in Brave.")
+        _store.wait(ACQUIRE_INTERVAL)
 
     server.shutdown()
-    log.info("Stopped cleanly.")
+    _status("")
+    log.info("Stopped.")
     return 0
 
 
