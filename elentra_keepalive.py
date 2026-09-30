@@ -135,22 +135,82 @@ def _enable_windows_ansi() -> bool:
         return False
 
 
+class _ConsoleHandler(logging.StreamHandler):
+    """In a real terminal, keeps one status line pinned below the log so routine
+    pings update it in place instead of scrolling a new line every time."""
+
+    def __init__(self, live: bool) -> None:
+        super().__init__()
+        self.live = live
+        self._status = ""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._status:
+            self.stream.write("\r\033[K")
+        super().emit(record)
+        if self._status:
+            self.stream.write(self._status)
+            self.flush()
+
+    def set_status(self, text: str) -> None:
+        self.acquire()
+        try:
+            self.stream.write("\r\033[K" + text)
+            self.flush()
+            self._status = text
+        finally:
+            self.release()
+
+    def clear_screen(self) -> None:
+        self.acquire()
+        try:
+            self.stream.write("\033[2J\033[3J\033[H")  # screen + scrollback, cursor home
+            self.flush()
+            self._status = ""
+        finally:
+            self.release()
+
+
+_console: _ConsoleHandler | None = None
+
+
 def _setup_logging(log_file: Path | None) -> None:
-    fmt = "%(asctime)s  %(levelname)-7s %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
+    global _console
 
     if log_file:
         # Plain text in the log file — no point coloring something you'll grep/tail.
-        logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datefmt, filename=str(log_file))
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s  %(levelname)-7s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            filename=str(log_file),
+            encoding="utf-8",
+        )
         return
 
-    use_color = sys.stderr.isatty() and os.environ.get("NO_COLOR") is None
-    if use_color and os.name == "nt":
-        use_color = _enable_windows_ansi()
+    ansi = sys.stderr.isatty() and (os.name != "nt" or _enable_windows_ansi())
+    use_color = ansi and os.environ.get("NO_COLOR") is None
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(_ColorFormatter(fmt, datefmt) if use_color else logging.Formatter(fmt, datefmt))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    _console = _ConsoleHandler(live=ansi)
+    if use_color:
+        # Color already conveys the level, so drop the level name.
+        _console.setFormatter(_ColorFormatter("%(asctime)s  %(message)s", "%H:%M:%S"))
+    else:
+        _console.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(message)s", "%H:%M:%S"))
+    logging.basicConfig(level=logging.INFO, handlers=[_console])
+
+
+def _status(text: str) -> None:
+    """Routine, repetitive state: a pinned line in a terminal, a log line elsewhere."""
+    if _console and _console.live:
+        _console.set_status(text)
+    elif text:
+        log.info(text)
+
+
+def _clear_screen() -> None:
+    if _console and _console.live:
+        _console.clear_screen()
 
 
 def next_delay(interval: int) -> int:
