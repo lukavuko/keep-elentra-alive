@@ -593,6 +593,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.interval < MIN_INTERVAL:
         ap.error(f"--interval must be at least {MIN_INTERVAL} seconds")
+    if not args.login_url.startswith(f"{BASE}/"):
+        ap.error(f"--login-url / ELENTRA_LOGIN_URL must start with {BASE}/")
 
     _setup_logging(args.log_file)
 
