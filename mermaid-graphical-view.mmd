@@ -20,27 +20,34 @@ flowchart TD
     D --> L["make_session()"]
     L --> M["_prevent_sleep()"]
 
-    M --> N["state = \"acquiring\""]
+    M --> N["state = \"\" (just started)"]
     N --> O["while not _stop"]
 
     O --> P{"SESSION_COOKIE in cookies?"}
-    P -->|"No"| Q["log warning + wait(ACQUIRE_INTERVAL)"]
-    Q --> O
+    P -->|"No"| NA["not alive"]
 
     P -->|"Yes"| R["session.cookies = build_jar(objs)"]
     R --> S["resp = session.get(args.url, allow_redirects=True)"]
     S --> T{"RequestException?"}
-    T -->|"Yes"| U["consecutive_errors += 1"]
+    T -->|"Yes"| U["errors += 1; log first, then status line"]
     U --> V["wait(min(30 * errors, 300))"]
     V --> O
 
     T -->|"No"| W{"session_is_alive(resp)?"}
-    W -->|"No"| X["state = \"acquiring\""]
-    X --> Y["wait(ACQUIRE_INTERVAL)"]
+    W -->|"No"| NA
+    NA --> X{"which case?"}
+    X -->|"no push yet"| X1["note: waiting for extension"]
+    X -->|"no cookies"| X2["note: waiting for login"]
+    X -->|"cookies, no refresh yet"| X3["_store.request_refresh(login_url)"]
+    X -->|"refresh > REFRESH_WINDOW ago"| X4["note: silent re-login failed"]
+    X1 --> Y["wait(ACQUIRE_INTERVAL)"]
+    X2 --> Y
+    X3 --> Y
+    X4 --> Y
     Y --> O
 
-    W -->|"Yes"| Z["state = \"alive\""]
-    Z --> AA["persist(objs, cookie_file)"]
+    W -->|"Yes"| Z["first time: clear screen, log logged in; state = \"alive\""]
+    Z --> AA["persist(objs, cookie_file); _status(last/next ping)"]
     AA --> AB["_store.wait(next_delay(interval))"]
     AB --> O
 
@@ -50,7 +57,7 @@ flowchart TD
         EX3["push(reason) - fetch POST http://127.0.0.1:8765/cookies\n{token, reason, cookies}"]
     end
 
-    EX1 --> EX2 --> EX3
+    EX1 --> EX2 --> EX3 --> EX4 --> EX5
 
     subgraph Listener["Listener thread"]
         F1["_PushHandler.do_POST()"]
@@ -58,7 +65,7 @@ flowchart TD
         F3{"PUSH_TOKEN valid?"}
         F4{"cookies is list of dicts?"}
         F5["_store.set(cookies)"]
-        F6["HTTP 200"]
+        F6["HTTP 200 JSON {state, action?} - take_action() is one-shot"]
     end
 
     EX3 -->|"HTTP POST"| F1
@@ -76,7 +83,7 @@ flowchart TD
 
     O --> D1["_store.get()"]
     D1 --> P
-    Q --> D1
+    Y --> D1
     AB --> D1
 
     style A fill:#dfefff,stroke:#333,stroke-width:1px
