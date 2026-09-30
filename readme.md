@@ -17,7 +17,11 @@ As long as you're connected to the internet and your laptop isn't asleep, it pre
    - → click **Load unpacked**
    - → select the `brave-extension` folder
 
-3. **Start** the script any time by double-clicking `run-keepalive.bat` on Windows or `run-keepalive-for-macOS.command` on macOS, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
+3. **Start** the script any time by double-clicking `run-keepalive-for-Windows.bat` on Windows or `run-keepalive-for-macOS.command` on macOS, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
+
+4. **Check the toolbar badge** (pin the extension to see it): **ON** means your session is being kept alive, **…** means the script is running but you're not logged in, and **OFF** means the script isn't running.
+
+> Updating from an older version? Hit the reload ↻ button on the extension's card in `brave://extensions` so the browser picks up the new extension code.
 
 ## ⚙️ How does this program work?
 
