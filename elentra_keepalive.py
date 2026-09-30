@@ -404,7 +404,7 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
         )
     t = threading.Thread(target=server.serve_forever, name="cookie-listener", daemon=True)
     t.start()
-    log.info("Listening for cookie pushes on http://%s:%d  (load brave-extension to feed it).", host, port)
+    log.info("Listening for the browser extension on %s:%d.", host, port)
     return server
 
 
