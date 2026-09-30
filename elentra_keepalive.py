@@ -52,6 +52,9 @@ except ImportError:
 
 BASE = "https://ubc.elentra.cloud"
 PING_URL = f"{BASE}/dashboard"
+# Loaded in a background browser tab to silently re-login while the SSO session
+# is still valid. Must stay on BASE — the extension refuses any other origin.
+LOGIN_URL = os.environ.get("ELENTRA_LOGIN_URL", f"{BASE}/")
 
 IDP_HOST = "authentication.ubc.ca"
 
@@ -61,6 +64,9 @@ JITTER = 180  # max jitter (s), clamped to a quarter of the interval
 TIMEOUT = 25
 
 ACQUIRE_INTERVAL = 10  # re-check cadence while waiting for a valid session
+# How long to give the extension to pick up a refresh request (next 1-min push)
+# and finish the background re-login before asking the user to log in.
+REFRESH_WINDOW = 150
 
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
