@@ -25,7 +25,11 @@ const DOMAINS = ["ubc.elentra.cloud", "authentication.ubc.ca"];
 
 const BADGES = {
   alive: ["ON", "#2e7d32", "Elentra keepalive: session alive"],
-  waiting: ["…", "#f9a825", "Elentra keepalive: running, waiting for a live Elentra session"],
+  waiting: [
+    "…",
+    "#f9a825",
+    "Elentra keepalive: running, waiting for a live Elentra session",
+  ],
   off: ["OFF", "#757575", "Elentra keepalive: script not running"],
 };
 
@@ -86,7 +90,8 @@ async function push(reason) {
     return;
   }
   setBadge(reply.state);
-  if (reply.action && reply.action.type === "refresh") silentRefresh(reply.action.url);
+  if (reply.action && reply.action.type === "refresh")
+    silentRefresh(reply.action.url);
 }
 
 // --- Silent re-login ------------------------------------------------------ //
