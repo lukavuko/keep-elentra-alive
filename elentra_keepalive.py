@@ -2,27 +2,30 @@
 """
 elentra_keepalive.py — keep a UBC Elentra session from idling out.
 
-You log in ONCE in your browser (CWL + MFA). This script borrows that session
-and pokes a cheap authenticated page every ~15 minutes so the server never marks
-you idle. It never sees, stores, or transmits your credentials.
+You log in once in your browser. This script borrows that session and pokes a
+cheap authenticated page every ~15 minutes so the server never marks you idle.
 
-A companion Brave extension (in ./brave-extension) watches your Elentra
-cookies and POSTs them to this script on 127.0.0.1 whenever you log in, log out,
-or if they rotate. This script runs a tiny local listener to receive
-them. You just:
-    1. Load ./brave-extension once at brave://extensions (Developer mode -> "Load unpacked")
-    2. Run:  python elentra_keepalive.py
+A companion browser extension (./brave-extension) pushes your Elentra cookies to
+this script on 127.0.0.1 whenever they change. This script never contacts the
+CWL login server itself: a ping that Elentra redirects there just means
+"logged out", and logging back in is left to the browser.
 
-Start it any time — logged in or out. While no valid session is available
-it re-checks every 10s. If the Elentra session dies but your SSO session is
-still valid, it asks the extension to silently re-login by loading the Elentra
-login URL in a background tab (override with ELENTRA_LOGIN_URL / --login-url).
+If the session dies (e.g. after the laptop sleeps), the script asks the
+extension to re-login in a background tab. If CWL asks for a password there,
+the extension fills it in from your OS keychain — only if you saved one with
+--set-login.
 
 Usage:
-    python elentra_keepalive.py
-    python elentra_keepalive.py --listen-port 8765
+    python elentra_keepalive.py                 # run
+    python elentra_keepalive.py --set-login     # save your CWL login to the OS keychain
+    python elentra_keepalive.py --forget-login  # remove it
+    python elentra_keepalive.py --debug         # verbose console output
 
-Requires: requests
+Logs (always at debug detail, rotated daily, kept 14 days):
+    %LOCALAPPDATA%\\elentra-keepalive\\logs   (Windows)
+    ~/.local/state/elentra-keepalive/logs   (macOS/Linux)
+
+Requires: requests, keyring
 """
 
 from __future__ import annotations
@@ -32,8 +35,10 @@ import ctypes
 import getpass
 import json
 import logging
+import logging.handlers
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -41,57 +46,70 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 try:
+    import keyring
     import requests
 except ImportError:
     req_file = Path(__file__).resolve().parent / "requirements.txt"
     print(f"Missing dependencies — installing from {req_file} ...", file=sys.stderr)
     subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req_file)], check=True)
+    import keyring
     import requests
 
-BASE = "https://ubc.elentra.cloud"
+ELENTRA_HOST = "ubc.elentra.cloud"
+BASE = f"https://{ELENTRA_HOST}"
 PING_URL = f"{BASE}/dashboard"
-# Loaded in a background browser tab to silently re-login while the SSO session
-# is still valid. Must stay on BASE — the extension refuses any other origin.
+# Loaded in a background browser tab to re-login. Must stay on BASE — the
+# extension refuses any other origin.
 LOGIN_URL = os.environ.get("ELENTRA_LOGIN_URL", f"{BASE}/")
-
-IDP_HOST = "authentication.ubc.ca"
 
 DEFAULT_INTERVAL = 900  # keepalive ping cadence once the session is alive
 MIN_INTERVAL = 60  # refuse anything faster; avoids hammering Elentra
 JITTER = 180  # max jitter (s), clamped to a quarter of the interval
 TIMEOUT = 25
+MAX_HOPS = 5  # same-host redirects followed per ping
 
-ACQUIRE_INTERVAL = 10  # re-check cadence while waiting for a valid session
-# How long to give the extension to pick up a refresh request (next 1-min push)
-# and finish the background re-login before asking the user to log in.
-REFRESH_WINDOW = 150
+# While logged out, re-check only when the cookies change, on wake/resync, or
+# at this slow cadence (Elentra may keep the same cookie across a re-login).
+WAITING_RECHECK = 300
+WAIT_SLICE = 30  # sleep in slices this long so a suspend/resume is noticed
+RESUME_GAP = 60  # wall clock jumping this far past a slice = we were asleep
+
+# Background re-login: attempts per logged-out spell and the delay before each.
+REFRESH_BACKOFF = (0, 120, 300)
+# How long one attempt may take (extension pickup on its 1-min push + SSO).
+REFRESH_WINDOW = 180
 
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
+KEYRING_SERVICE = "elentra-keepalive"
+KEYRING_USER_KEY = "__username__"  # entry holding which CWL username is saved
 
-def _default_cookie_path() -> Path:
+
+def _state_dir() -> Path:
     # Keep this out of the project directory — it may live in a synced folder
-    # (OneDrive, Dropbox, ...) and this file holds live session cookie values.
+    # (OneDrive, Dropbox, ...) and holds live session cookie values.
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
     else:
         base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return base / "elentra-keepalive" / "cookies.json"
+    return base / "elentra-keepalive"
 
 
-DEFAULT_COOKIE_PATH = _default_cookie_path()
+STATE_DIR = _state_dir()
+DEFAULT_COOKIE_PATH = STATE_DIR / "cookies.json"
+DEFAULT_LOG_DIR = STATE_DIR / "logs"
+# Present = the saved CWL login was rejected; autofill stays off until
+# --set-login, so a stale password can't lock the account with retries.
+LOGIN_BLOCK_PATH = STATE_DIR / "login-rejected"
 
-# Local listener the Brave extension pushes cookies to. Bound to loopback only.
+# Local listener the extension pushes to. Bound to loopback only.
 # Keep these two in sync with brave-extension/background.js.
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 8765
-
-# Light shared gate. Real safety comes from loopback binding + validating every
-# received cookie set against Elentra before adopting it. Change in both files
-# together if you like.
 PUSH_TOKEN = "elentra-keepalive-local"
 
 # The cookie whose presence means "there is an Elentra app session to keep warm".
@@ -101,17 +119,16 @@ log = logging.getLogger("keepalive")
 _stop = False
 
 
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
 class _ColorFormatter(logging.Formatter):
-    """Colors console log lines by level. Green/cyan read as "good", yellow as
-    "waiting/retrying", red as "actually wrong" — matching this script's own
-    acquire/alive/error states."""
-
     COLORS = {
-        logging.DEBUG: "\033[2;37m",  # dim gray
-        logging.INFO: "\033[32m",  # green
-        logging.WARNING: "\033[33m",  # yellow
-        logging.ERROR: "\033[31m",  # red
-        logging.CRITICAL: "\033[1;31m",  # bold red
+        logging.DEBUG: "\033[2;37m",
+        logging.INFO: "\033[32m",
+        logging.WARNING: "\033[33m",
+        logging.ERROR: "\033[31m",
+        logging.CRITICAL: "\033[1;31m",
     }
     RESET = "\033[0m"
 
@@ -122,8 +139,6 @@ class _ColorFormatter(logging.Formatter):
 
 
 def _enable_windows_ansi() -> bool:
-    """Turn on ANSI escape processing in the Windows console. Returns False (and
-    leaves color off) if that fails, e.g. output isn't a real console."""
     try:
         ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
         handle = ctypes.windll.kernel32.GetStdHandle(-12)  # STD_ERROR_HANDLE
@@ -131,13 +146,12 @@ def _enable_windows_ansi() -> bool:
         if not ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
             return False
         return bool(ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
-    except Exception:  # noqa: BLE001 — color is a nicety, never worth crashing over
+    except Exception:  # noqa: BLE001 — color is a nicety
         return False
 
 
 class _ConsoleHandler(logging.StreamHandler):
-    """In a real terminal, keeps one status line pinned below the log so routine
-    pings update it in place instead of scrolling a new line every time."""
+    """In a real terminal, keeps one status line pinned below the log."""
 
     def __init__(self, live: bool) -> None:
         super().__init__()
@@ -164,7 +178,7 @@ class _ConsoleHandler(logging.StreamHandler):
     def clear_screen(self) -> None:
         self.acquire()
         try:
-            self.stream.write("\033[2J\033[3J\033[H")  # screen + scrollback, cursor home
+            self.stream.write("\033[2J\033[3J\033[H")
             self.flush()
             self._status = ""
         finally:
@@ -174,30 +188,36 @@ class _ConsoleHandler(logging.StreamHandler):
 _console: _ConsoleHandler | None = None
 
 
-def _setup_logging(log_file: Path | None) -> None:
+def _setup_logging(log_dir: Path | None, debug: bool) -> Path | None:
+    """Console at INFO (DEBUG with --debug); a daily-rotated file always at DEBUG.
+    Nothing logged may contain cookie values, passwords or URL query strings."""
     global _console
-
-    if log_file:
-        # Plain text in the log file — no point coloring something you'll grep/tail.
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s  %(levelname)-7s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-            filename=str(log_file),
-            encoding="utf-8",
-        )
-        return
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)  # logs full URLs
 
     ansi = sys.stderr.isatty() and (os.name != "nt" or _enable_windows_ansi())
-    use_color = ansi and os.environ.get("NO_COLOR") is None
-
     _console = _ConsoleHandler(live=ansi)
-    if use_color:
-        # Color already conveys the level, so drop the level name.
+    _console.setLevel(logging.DEBUG if debug else logging.INFO)
+    if ansi and os.environ.get("NO_COLOR") is None:
         _console.setFormatter(_ColorFormatter("%(asctime)s  %(message)s", "%H:%M:%S"))
     else:
         _console.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(message)s", "%H:%M:%S"))
-    logging.basicConfig(level=logging.INFO, handlers=[_console])
+    root.addHandler(_console)
+
+    if log_dir is None:
+        return None
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / "keepalive.log"
+        fh = logging.handlers.TimedRotatingFileHandler(path, when="midnight", backupCount=14, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(threadName)-15s %(message)s"))
+        root.addHandler(fh)
+        return path
+    except OSError as exc:
+        log.warning("Can't write logs to %s (%s) — console only.", log_dir, exc)
+        return None
 
 
 def _status(text: str) -> None:
@@ -213,14 +233,23 @@ def _clear_screen() -> None:
         _console.clear_screen()
 
 
+def safe_url(url: str) -> str:
+    """host/path only — query strings can carry SAML requests and tokens."""
+    p = urlsplit(url)
+    return f"{p.hostname or '?'}{p.path or '/'}"
+
+
+# --------------------------------------------------------------------------- #
+# Misc
+# --------------------------------------------------------------------------- #
 def next_delay(interval: int) -> int:
-    """Keepalive delay with jitter, clamped so a short --interval can't go negative."""
     jitter = min(JITTER, interval // 4)
     return max(30, interval + random.randint(-jitter, jitter))
 
 
 def _prevent_sleep() -> None:
-    """Ask Windows not to sleep while this process runs."""
+    """Ask Windows not to idle-sleep while this process runs (a closed lid or the
+    Start-menu Sleep still sleeps — the wake handling below covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
         log.info("Keeping this PC awake while running — close me when you're done.")
@@ -236,61 +265,169 @@ def _handle_signal(signum, _frame):
         log.warning("Second signal — forcing immediate exit.")
         os._exit(1)
     _stop = True
-    _store.wake()  # break any wait immediately
+    _store.wake()
     log.info("Stopping... (press Ctrl+C again to force quit)")
 
 
 # --------------------------------------------------------------------------- #
-# Shared store: the listener thread writes the latest pushed cookies here; the
-# main loop reads them. `wake()` interrupts the loop's sleep so a fresh login is
-# picked up within moments instead of at the next scheduled tick.
+# Saved CWL login (OS keychain)
+# --------------------------------------------------------------------------- #
+def saved_login() -> tuple[str, str] | None:
+    try:
+        user = keyring.get_password(KEYRING_SERVICE, KEYRING_USER_KEY)
+        pw = keyring.get_password(KEYRING_SERVICE, user) if user else None
+    except Exception as exc:  # noqa: BLE001 — no usable keychain backend
+        log.debug("Keychain unavailable: %s", type(exc).__name__)
+        return None
+    return (user, pw) if user and pw else None
+
+
+def login_blocked() -> bool:
+    return LOGIN_BLOCK_PATH.exists()
+
+
+def set_login() -> int:
+    print("Saves your CWL login in the OS keychain (Windows Credential Manager / macOS Keychain).")
+    print("It's only used to fill the CWL login page in a background tab the extension opens.\n")
+    user = input("CWL username: ").strip()
+    if not user:
+        print("No username given — nothing saved.")
+        return 1
+    pw = getpass.getpass("CWL password (not shown): ")
+    if not pw:
+        print("No password given — nothing saved.")
+        return 1
+    forget_login(quiet=True)
+    keyring.set_password(KEYRING_SERVICE, user, pw)
+    keyring.set_password(KEYRING_SERVICE, KEYRING_USER_KEY, user)
+    LOGIN_BLOCK_PATH.unlink(missing_ok=True)
+    print(f"Saved login for {user}. Remove it any time with --forget-login.")
+    return 0
+
+
+def forget_login(quiet: bool = False) -> int:
+    try:
+        user = keyring.get_password(KEYRING_SERVICE, KEYRING_USER_KEY)
+        if user:
+            try:
+                keyring.delete_password(KEYRING_SERVICE, user)
+            except keyring.errors.PasswordDeleteError:
+                pass
+            keyring.delete_password(KEYRING_SERVICE, KEYRING_USER_KEY)
+    except keyring.errors.PasswordDeleteError:
+        pass
+    LOGIN_BLOCK_PATH.unlink(missing_ok=True)
+    if not quiet:
+        print("Saved CWL login removed." if user else "No saved CWL login.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Shared store: the listener thread writes here; the main loop reads.
 # --------------------------------------------------------------------------- #
 class CookieStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._event = threading.Event()
-        self._cookies: list[dict] | None = None  # list of {name,value,domain,path,...}
+        self._cookies: list[dict] | None = None
         self._action: dict | None = None  # one-shot instruction for the extension
+        self._force = False  # re-check now, even if cookies look unchanged
+        self._login_busy = False  # user has a CWL login page open
+        self._refresh_result: str | None = None
+        self._creds_armed_until = 0.0  # monotonic; one credential hand-out allowed
         self.state = "waiting"  # reported to the extension for its toolbar badge
 
-    def request_refresh(self, url: str) -> None:
-        with self._lock:
-            self._action = {"type": "refresh", "url": url}
-
-    def take_action(self) -> dict | None:
-        with self._lock:
-            action, self._action = self._action, None
-            return action
-
-    def set(self, cookies: list[dict]) -> None:
+    # -- cookies --
+    def set(self, cookies: list[dict], login_busy: bool, force: bool) -> None:
         with self._lock:
             changed = cookies_from_objects(cookies) != cookies_from_objects(self._cookies or [])
             self._cookies = cookies
-        # The extension re-pushes on a 1-minute alarm (and on every service-worker
-        # respawn) even when nothing changed. Only wake the loop early for an
-        # actual change (new login, rotation) — otherwise a heartbeat push would
-        # cut the keepalive interval down to the push cadence.
-        if changed:
+            self._login_busy = login_busy
+            if force:
+                self._force = True
+        # The extension re-pushes every minute even when nothing changed; only an
+        # actual change (or an explicit wake/resync) cuts the current wait short.
+        if changed or force:
             self._event.set()
 
     def get(self) -> list[dict] | None:
         with self._lock:
             return None if self._cookies is None else list(self._cookies)
 
+    def login_busy(self) -> bool:
+        with self._lock:
+            return self._login_busy
+
+    def take_force(self) -> bool:
+        with self._lock:
+            force, self._force = self._force, False
+            return force
+
+    # -- re-login --
+    def request_refresh(self, url: str) -> None:
+        with self._lock:
+            self._action = {"type": "refresh", "url": url}
+            self._refresh_result = None
+
+    def take_action(self) -> dict | None:
+        with self._lock:
+            action, self._action = self._action, None
+            if action and action["type"] == "refresh":
+                self._creds_armed_until = time.monotonic() + REFRESH_WINDOW
+            return action
+
+    def take_credentials(self) -> tuple[str, str] | None:
+        """One hand-out per delivered refresh, within its window."""
+        with self._lock:
+            armed = time.monotonic() < self._creds_armed_until
+            self._creds_armed_until = 0.0
+        if not armed or login_blocked():
+            return None
+        return saved_login()
+
+    def refresh_finished(self, result: str) -> None:
+        with self._lock:
+            self._refresh_result = result
+            self._creds_armed_until = 0.0
+            self._force = True
+        self._event.set()
+
+    def take_refresh_result(self) -> str | None:
+        with self._lock:
+            result, self._refresh_result = self._refresh_result, None
+            return result
+
+    # -- waiting --
     def wake(self) -> None:
         self._event.set()
 
-    def wait(self, timeout: float) -> None:
-        """Sleep up to `timeout`s, returning early if new cookies arrive/stop."""
-        self._event.wait(timeout)
-        self._event.clear()
+    def wait(self, timeout: float) -> str:
+        """Sleep up to `timeout`s. Returns "event" (woken early), "resume" (the
+        machine slept through it — wall clock jumped), or "timeout"."""
+        end = time.time() + timeout
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return "timeout"
+            chunk = min(WAIT_SLICE, left)
+            t0 = time.time()
+            woke = self._event.wait(chunk)
+            self._event.clear()
+            if woke:
+                return "event"
+            if time.time() - t0 > chunk + RESUME_GAP:
+                return "resume"
 
 
 _store = CookieStore()
 
 
+def is_elentra(c: dict) -> bool:
+    d = (c.get("domain") or "").lstrip(".").lower()
+    return d == ELENTRA_HOST or d.endswith("." + ELENTRA_HOST)
+
+
 def cookies_from_objects(objs: list[dict]) -> dict[str, str]:
-    """Flatten a list of cookie objects to a name->value dict (last wins)."""
     out: dict[str, str] = {}
     for c in objs:
         name, value = c.get("name"), c.get("value")
@@ -300,96 +437,134 @@ def cookies_from_objects(objs: list[dict]) -> dict[str, str]:
 
 
 def build_jar(objs: list[dict]) -> requests.cookies.RequestsCookieJar:
-    """Build a domain-scoped cookie jar so each cookie is sent to the right host
-    (Elentra app cookies to elentra.cloud, SSO cookies to the IdP on redirect)."""
     jar = requests.cookies.RequestsCookieJar()
     for c in objs:
         name, value = c.get("name"), c.get("value")
         if name is None or value is None:
             continue
-        domain = (c.get("domain") or "").lstrip(".")
-        path = c.get("path") or "/"
-        if domain:
-            jar.set(name, value, domain=domain, path=path)
-        else:
-            jar.set(name, value)
+        jar.set(name, value, domain=(c.get("domain") or ELENTRA_HOST).lstrip("."), path=c.get("path") or "/")
     return jar
 
 
 # --------------------------------------------------------------------------- #
-# Local push listener
+# Local listener
 # --------------------------------------------------------------------------- #
-MAX_PUSH_BYTES = 1 << 20  # 1 MiB is far more than any cookie set needs
+MAX_PUSH_BYTES = 1 << 20
+EVENT_NAME = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
+REFRESH_RESULTS = {"refresh-returned", "refresh-timeout", "refresh-login-rejected", "refresh-skipped", "refresh-closed"}
 
 
 class _PushHandler(BaseHTTPRequestHandler):
     def _reject_browser_origin(self) -> bool:
-        """The extension fetches us via its host_permissions grant, which carries no
-        Origin header (or a chrome-extension:// one). A same-machine web page always
-        sends its https:// origin — refuse those so an open tab can't poke us."""
+        """The extension's service worker sends a chrome-extension:// origin (or
+        none). A web page always sends its own — refuse those."""
         origin = self.headers.get("Origin")
         if origin and not origin.startswith("chrome-extension://"):
-            self.send_response(403)
-            self.end_headers()
+            self._send(403)
             return True
         return False
 
-    def do_GET(self):  # noqa: N802 — cheap health check for the extension
-        if self._reject_browser_origin():
-            return
-        if self.path.rstrip("/") == "/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"ok")
-        else:
-            self.send_response(404)
-            self.end_headers()
+    def _send(self, code: int, body: dict | None = None) -> None:
+        data = json.dumps(body).encode() if body is not None else b""
+        self.send_response(code)
+        if body is not None:
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
-    def do_POST(self):  # noqa: N802
-        if self._reject_browser_origin():
-            return
-        if self.path.rstrip("/") != "/cookies":
-            self.send_response(404)
-            self.end_headers()
-            return
+    def _payload(self) -> dict | None:
         try:
             length = int(self.headers.get("Content-Length", 0))
             if not 0 < length <= MAX_PUSH_BYTES:
                 raise ValueError(f"bad Content-Length: {length}")
             payload = json.loads(self.rfile.read(length))
-        except ValueError:  # covers json.JSONDecodeError too
-            self.send_response(400)
-            self.end_headers()
-            return
+            if not isinstance(payload, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            self._send(400)
+            return None
+        if payload.get("token") != PUSH_TOKEN:
+            self._send(403)
+            return None
+        return payload
 
-        if PUSH_TOKEN and payload.get("token") != PUSH_TOKEN:
-            self.send_response(403)
-            self.end_headers()
+    def do_GET(self):  # noqa: N802
+        if self._reject_browser_origin():
             return
+        if self.path.rstrip("/") == "/health":
+            self._send(200, {"ok": True})
+        else:
+            self._send(404)
 
+    def do_POST(self):  # noqa: N802
+        if self._reject_browser_origin():
+            return
+        route = self.path.rstrip("/")
+        if route not in ("/cookies", "/event", "/credentials"):
+            self._send(404)
+            return
+        payload = self._payload()
+        if payload is None:
+            return
+        if route == "/cookies":
+            self._cookies(payload)
+        elif route == "/event":
+            self._event(payload)
+        else:
+            self._credentials()
+
+    def _cookies(self, payload: dict) -> None:
         cookies = payload.get("cookies")
         if not isinstance(cookies, list) or not all(isinstance(c, dict) for c in cookies):
-            self.send_response(400)
-            self.end_headers()
+            self._send(400)
             return
-
-        _store.set(cookies)
-        names = ", ".join(sorted({c.get("name", "?") for c in cookies})) or "(none)"
-        log.debug("Push received (%s): %d cookie(s): %s", payload.get("reason", "?"), len(cookies), names)
+        # Older extension versions also sent CWL login-server cookies; never keep those.
+        cookies = [c for c in cookies if is_elentra(c)]
+        reason = str(payload.get("reason", "?"))[:20]
+        login_busy = bool(payload.get("loginInProgress"))
+        _store.set(cookies, login_busy, force=reason in ("resume", "resync", "refresh-landed"))
+        names = ", ".join(sorted({str(c.get("name", "?")) for c in cookies})) or "(none)"
+        log.debug("Push (%s): %d cookie(s) [%s]%s", reason, len(cookies), names, " · CWL login page open" if login_busy else "")
+        if reason == "resume":
+            log.info("Browser reports the computer woke up — checking the session.")
+        elif reason == "resync":
+            log.info("Resync requested from the extension.")
 
         reply = {"state": _store.state}
         action = _store.take_action()
         if action:
             reply["action"] = action
-        body = json.dumps(reply).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            log.debug("Handing the extension: %s", action["type"])
+        self._send(200, reply)
 
-    def log_message(self, fmt, *args):  # silence default stderr access log
+    def _event(self, payload: dict) -> None:
+        name = str(payload.get("event", ""))
+        detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+        if not EVENT_NAME.match(name):
+            self._send(400)
+            return
+        text = json.dumps(detail, separators=(",", ":"))[:600]
+        log.debug("Extension: %s %s", name, text)
+        if name == "refresh-login-rejected":
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            LOGIN_BLOCK_PATH.touch()
+            log.error("CWL rejected the saved login. Autofill is off until you run --set-login again.")
+        if name in REFRESH_RESULTS:
+            _store.refresh_finished(name)
+        self._send(200, {"ok": True})
+
+    def _credentials(self) -> None:
+        creds = _store.take_credentials()
+        if creds is None:
+            log.debug("Extension asked for the saved login: none available (not saved, blocked, or not armed).")
+            self._send(404, {})
+            return
+        log.info("Filling the saved CWL login in the background re-login tab.")
+        self._send(200, {"username": creds[0], "password": creds[1]})
+
+    def log_message(self, fmt, *args):
         return
 
 
@@ -402,25 +577,15 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
             "Is another copy of this script already running? Close it, or pass "
             "--listen-port NNNN (and update PORT in brave-extension/background.js to match)."
         )
-    t = threading.Thread(target=server.serve_forever, name="cookie-listener", daemon=True)
-    t.start()
+    threading.Thread(target=server.serve_forever, name="listener", daemon=True).start()
     log.info("Listening for the browser extension on %s:%d.", host, port)
     return server
 
 
-def load_cookie_objects(path: Path) -> list[dict]:
-    """Load persisted cookie objects (our own warm-start format), keeping
-    domain/path so a rebuilt jar is properly scoped."""
-    if not path.exists():
-        sys.exit(f"Cookie file not found: {path}")
-    data = json.loads(path.read_text())
-    if isinstance(data, list):
-        return [c for c in data if "name" in c and "value" in c]
-    return [{"name": n, "value": v} for n, v in dict(data).items()]
-
-
+# --------------------------------------------------------------------------- #
+# Session checks / persistence
+# --------------------------------------------------------------------------- #
 def lock_down(path: Path) -> None:
-    """Best-effort permission lockdown on a freshly written cookie file."""
     if os.name == "nt":
         result = subprocess.run(
             ["icacls", str(path), "/inheritance:r", "/grant:r", f"{getpass.getuser()}:F"],
@@ -428,41 +593,67 @@ def lock_down(path: Path) -> None:
             text=True,
         )
         if result.returncode != 0:
-            log.warning(
-                "Couldn't restrict permissions on %s: %s",
-                path,
-                result.stdout.strip() or result.stderr.strip(),
-            )
+            log.warning("Couldn't restrict permissions on %s: %s", path, result.stdout.strip() or result.stderr.strip())
     else:
         path.chmod(0o600)
 
 
-# --------------------------------------------------------------------------- #
-# Session checks / persistence
-# --------------------------------------------------------------------------- #
-def session_is_alive(resp: requests.Response) -> bool:
-    if resp.status_code in (401, 403) or resp.status_code >= 500:
-        return False
-    if any(IDP_HOST in r.url for r in resp.history) or IDP_HOST in resp.url:
-        return False
-    if "/login" in resp.url.lower():
-        return False
-
-    body = resp.text[:4000].lower()
-    if "samlrequest" in body or 'name="j_username"' in body:
-        return False
-    return True
+def load_cookie_objects(path: Path) -> list[dict]:
+    data = json.loads(path.read_text())
+    if not isinstance(data, list):
+        return []
+    return [c for c in data if isinstance(c, dict) and "name" in c and "value" in c and is_elentra(c)]
 
 
 def persist(objs: list[dict], path: Path | None) -> None:
-    """Persist cookie objects (with domain/path) so a warm start can rebuild a
-    properly-scoped jar instead of falling back to domainless cookies."""
     if path is None:
         return
-    slim = [{k: c[k] for k in ("name", "value", "domain", "path") if k in c} for c in objs]
+    slim = [{k: c[k] for k in ("name", "value", "domain", "path") if k in c} for c in objs if is_elentra(c)]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(slim, indent=2))
     lock_down(path)
+
+
+def check_session(session: requests.Session, url: str) -> tuple[str, list[str]]:
+    """Ping Elentra, following redirects only while they stay on Elentra.
+
+    Returns ("alive" | "dead" | "error", trail). A redirect anywhere else (the
+    CWL login server) means logged out — and we stop there, never touching the
+    login server: requests sent there with the browser's cookies would start a
+    competing login and leave the browser's login form "Stale Request".
+    """
+    trail: list[str] = []
+    for _ in range(MAX_HOPS):
+        resp = session.get(url, timeout=TIMEOUT, allow_redirects=False)
+        trail.append(f"{resp.status_code} {safe_url(url)}")
+        if resp.is_redirect:
+            nxt = urljoin(url, resp.headers.get("Location", ""))
+            p = urlsplit(nxt)
+            if p.scheme != "https" or (p.hostname or "").lower() != ELENTRA_HOST:
+                trail.append(f"-> {p.hostname} (not followed)")
+                return "dead", trail
+            if "/login" in p.path.lower():
+                trail.append(f"-> {p.path} (login page)")
+                return "dead", trail
+            url = nxt
+            continue
+        break
+    else:
+        trail.append("too many redirects")
+        return "dead", trail
+
+    if resp.status_code >= 500 or resp.status_code == 429:
+        return "error", trail
+    if resp.status_code in (401, 403):
+        return "dead", trail
+    body = resp.text[:20000].lower()
+    title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S)
+    if title:
+        trail.append(f"title={title.group(1).strip()[:60]!r}")
+    if "samlrequest" in body or 'name="j_username"' in body or 'type="password"' in body:
+        trail.append("login form in page")
+        return "dead", trail
+    return "alive", trail
 
 
 def make_session() -> requests.Session:
@@ -471,7 +662,7 @@ def make_session() -> requests.Session:
         {
             "User-Agent": os.environ.get(
                 "KEEPALIVE_UA",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
@@ -480,102 +671,150 @@ def make_session() -> requests.Session:
 
 
 # --------------------------------------------------------------------------- #
-# Loops
+# Main loop
 # --------------------------------------------------------------------------- #
 def run_auto_loop(args) -> int:
-    """Listener-fed loop: acquire (10s) until a pushed cookie validates, then
-    keepalive (interval). Falls back to acquire if the session dies. Never exits
-    on a dead session — it waits for the next good push."""
     server = start_listener(LISTEN_HOST, args.listen_port)
 
-    # Warm start: if a previously-persisted cookie file exists, seed it so an
-    # already-logged-in user is validated immediately before the extension's first push.
-    if args.cookie_file and args.cookie_file.exists():
+    # Warm start from the last known-good cookies; they're re-validated first and
+    # the file is deleted if they turn out dead.
+    if args.cookie_file.exists():
         try:
             seed = load_cookie_objects(args.cookie_file)
-            _store.set(seed)
-            log.debug("Warm-started from %s (%d cookie(s)); will re-validate.", args.cookie_file, len(seed))
-        except Exception as exc:  # noqa: BLE001 — best effort
+            _store.set(seed, login_busy=False, force=True)
+            log.debug("Warm start from %s (%d cookie(s)).", args.cookie_file, len(seed))
+        except Exception as exc:  # noqa: BLE001
             log.debug("Warm start skipped: %s", exc)
+
+    creds = saved_login()
+    if creds and not login_blocked():
+        log.info("Saved CWL login found (%s) — background re-login can fill it in.", creds[0])
+    elif creds:
+        log.warning("Saved CWL login was rejected last time — run --set-login to update it.")
+    else:
+        log.debug("No saved CWL login; background re-login relies on CWL's own session.")
 
     session = make_session()
     _prevent_sleep()
 
-    state = ""  # "" (just started), "alive", or "waiting"
+    state = ""  # "", "alive" or "waiting"
     errors = 0
-    refresh_at: float | None = None  # when this waiting spell's silent refresh was requested
+    dead_sig: frozenset | None = None  # cookies last found dead
+    last_check = 0.0  # monotonic, last ping while waiting
+    attempts: list[float] = []  # monotonic start of each re-login attempt this spell
+    attempt_open = False
     last_note = ""
+    force = True
 
     def note(level: int, msg: str) -> None:
-        """Log only when the message changes, so waiting doesn't repeat itself."""
         nonlocal last_note
         if msg != last_note:
             log.log(level, msg)
             last_note = msg
 
-    # Warm start seeds the store, which marks the event "changed" — drain it so
-    # we don't fire an extra ping the instant the loop starts.
-    _store.wait(0)
+    def new_spell(why: str) -> None:
+        nonlocal attempts, attempt_open, dead_sig, force
+        log.debug("Re-check: %s", why)
+        attempts, attempt_open, dead_sig, force = [], False, None, True
 
     while not _stop:
+        if _store.take_force():
+            force = True
+        result = _store.take_refresh_result()
+        if result:
+            attempt_open = False
+            log.debug("Re-login attempt %d ended: %s", len(attempts), result)
+            if result == "refresh-skipped" and attempts:
+                attempts.pop()  # user was logging in themselves; doesn't count
+
         objs = _store.get()
         flat = cookies_from_objects(objs) if objs else {}
+        sig = frozenset(flat.items())
+        verdict = None
 
-        alive = False
-        if SESSION_COOKIE in flat:
-            # Rebuilt from the browser's cookies every time (dropping anything the
-            # server set on our last request): the point is to keep the *browser's*
-            # session warm, not to drift onto a session only this script holds.
+        due = force or state != "waiting" or sig != dead_sig or time.monotonic() - last_check >= WAITING_RECHECK
+        if SESSION_COOKIE in flat and due:
+            if _store.login_busy() and state == "waiting" and not force:
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.")
+                _store.wait(ACQUIRE_WAIT)
+                continue
+            force = False
             session.cookies = build_jar(objs)
             try:
-                resp = session.get(args.url, timeout=TIMEOUT, allow_redirects=True)
-                if args.sso_url:
-                    session.get(args.sso_url, timeout=TIMEOUT, allow_redirects=True)
+                verdict, trail = check_session(session, args.url)
             except requests.RequestException as exc:
+                verdict, trail = "error", [type(exc).__name__]
+            log.debug("Ping %s: %s", verdict, " | ".join(trail))
+            last_check = time.monotonic()
+
+            if verdict == "error":
                 errors += 1
                 delay = min(30 * errors, 300)
                 if errors == 1:
-                    log.warning("Can't reach Elentra (%s) — retrying.", type(exc).__name__)
+                    log.warning("Can't reach Elentra (%s) — retrying.", trail[-1])
                 else:
                     _status(f"Can't reach Elentra — {errors} failed attempts, retrying in {delay}s")
-                _store.wait(delay)
+                if _store.wait(delay) == "resume":
+                    new_spell("woke from sleep")
                 continue
             if errors:
                 log.info("Connection to Elentra restored.")
                 errors = 0
-            alive = session_is_alive(resp)
+        elif SESSION_COOKIE not in flat:
+            force = False
 
-        if alive:
+        if verdict == "alive":
             if state != "alive":
                 _clear_screen()
                 log.info("Logged in to Elentra — keepalive active, pinging every ~%d min.", round(args.interval / 60))
                 state = _store.state = "alive"
-                refresh_at = None
                 last_note = ""
+            attempts, attempt_open, dead_sig = [], False, None
             persist(objs, args.cookie_file)
             delay = next_delay(args.interval)
             _status(f"Session alive · last ping {time.strftime('%H:%M')} · next ~{time.strftime('%H:%M', time.localtime(time.time() + delay))}")
-            _store.wait(delay)  # a fresh push (re-login) wakes us early
+            if _store.wait(delay) == "resume":
+                log.info("Computer woke up — checking the session now.")
+                force = True
             continue
+
+        if verdict == "dead":
+            dead_sig = sig
+            args.cookie_file.unlink(missing_ok=True)
 
         if state == "alive":
             _status("")
             note(logging.WARNING, "Elentra session expired." if SESSION_COOKIE in flat else "Logged out of Elentra in the browser.")
+        if state != "waiting":
+            attempts, attempt_open = [], False
         state = _store.state = "waiting"
 
         if objs is None:
-            note(logging.WARNING, "Waiting for the browser extension — is it loaded in Brave?")
-        elif not objs:
-            note(logging.WARNING, "Waiting for you to log in to Elentra in Brave.")
-        elif refresh_at is None:
-            # Once per waiting spell: if the SSO session is still valid, loading
-            # Elentra in a background tab logs back in without a password or MFA.
-            _store.request_refresh(args.login_url)
-            refresh_at = time.monotonic()
-            note(logging.WARNING, "Not logged in — trying a silent re-login in the background...")
-        elif time.monotonic() - refresh_at > REFRESH_WINDOW:
-            note(logging.WARNING, "Silent re-login didn't work — please log in to Elentra in Brave.")
-        _store.wait(ACQUIRE_INTERVAL)
+            note(logging.WARNING, "Waiting for the browser extension — is it loaded and enabled?")
+        elif verdict is None and SESSION_COOKIE in flat:
+            pass  # cookies unchanged since they were found dead; nothing new to check
+        else:
+            maybe_refresh = objs or saved_login()
+            if attempt_open and time.monotonic() - attempts[-1] > REFRESH_WINDOW:
+                attempt_open = False
+                log.debug("Re-login attempt %d: no result from the extension in time.", len(attempts))
+            if not maybe_refresh:
+                note(logging.WARNING, "Waiting for you to log in to Elentra.")
+            elif _store.login_busy():
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.")
+            elif not attempt_open and len(attempts) < len(REFRESH_BACKOFF):
+                since = time.monotonic() - attempts[-1] if attempts else float("inf")
+                if since >= REFRESH_BACKOFF[len(attempts)]:
+                    attempts.append(time.monotonic())
+                    attempt_open = True
+                    _store.request_refresh(args.login_url)
+                    note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...")
+            elif not attempt_open:
+                hint = "" if saved_login() else " (Tip: save your CWL login with --set-login.)"
+                note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra in the browser.{hint}")
+
+        if _store.wait(ACQUIRE_WAIT) == "resume":
+            new_spell("woke from sleep")
 
     server.shutdown()
     _status("")
@@ -583,28 +822,40 @@ def run_auto_loop(args) -> int:
     return 0
 
 
+ACQUIRE_WAIT = 10  # loop cadence while logged out (pings are gated separately)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--cookie-file", type=Path, help="Warm-start/persist path for the cookie JSON")
+    ap.add_argument("--set-login", action="store_true", help="Save your CWL login in the OS keychain and exit")
+    ap.add_argument("--forget-login", action="store_true", help="Remove the saved CWL login and exit")
+    ap.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_PATH, help="Warm-start/persist path for the cookie JSON")
     ap.add_argument("--listen-port", type=int, default=LISTEN_PORT, help="Local port the extension pushes to")
-    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help=f"Keepalive ping cadence in seconds")
-    ap.add_argument("--url", default=PING_URL, help="Authenticated URL to ping")
-    ap.add_argument("--sso-url", help="Optional second URL to keep the SSO session warm")
-    ap.add_argument("--login-url", default=LOGIN_URL, help="Elentra URL the extension loads to silently re-login (env: ELENTRA_LOGIN_URL)")
-    ap.add_argument("--log-file", type=Path)
+    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Keepalive ping cadence in seconds")
+    ap.add_argument("--url", default=PING_URL, help="Authenticated Elentra URL to ping")
+    ap.add_argument("--login-url", default=LOGIN_URL, help="Elentra URL the extension loads to re-login (env: ELENTRA_LOGIN_URL)")
+    ap.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR, help="Where to keep rotated debug logs")
+    ap.add_argument("--no-log-files", action="store_true", help="Don't write log files")
+    ap.add_argument("--debug", action="store_true", help="Show debug detail in the console too")
     args = ap.parse_args()
+
+    if args.set_login:
+        return set_login()
+    if args.forget_login:
+        return forget_login()
     if args.interval < MIN_INTERVAL:
         ap.error(f"--interval must be at least {MIN_INTERVAL} seconds")
-    if not args.login_url.startswith(f"{BASE}/"):
-        ap.error(f"--login-url / ELENTRA_LOGIN_URL must start with {BASE}/")
+    for name in ("url", "login_url"):
+        if not getattr(args, name).startswith(f"{BASE}/"):
+            ap.error(f"--{name.replace('_', '-')} must start with {BASE}/")
 
-    _setup_logging(args.log_file)
+    log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug)
+    if log_path:
+        log.info("Detailed log: %s", log_path)
+    log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
-
-    if args.cookie_file is None:
-        args.cookie_file = DEFAULT_COOKIE_PATH
     return run_auto_loop(args)
 
 

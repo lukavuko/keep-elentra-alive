@@ -1,83 +1,101 @@
 # 🩺 Let's Keep Elentra Alive
 
-Are you **frustrated** being logged out of Elentra over and over again in the same lecture? Are you tired of redundantly re-authenticating yourself? Do you love Elentra but feel like Elentra doesn't love you back? Well, you've come to the right place.
+Tired of being logged out of Elentra mid-lecture? This keeps you logged in.
 
-## ✨ What does this program do?
+## ✨ What it does
 
-As long as you're connected to the internet and your laptop isn't asleep, it prevents your logged-in Elentra session from idling out — so you can keep working without interruption.
+While you're online and your laptop is awake, it stops your Elentra session from
+timing out.
 
-## 🚀 How do I use this?
+## 🚀 How to use it
 
-0. **Install [Python](https://www.python.org/downloads/latest/python3.13/)**
+0. **Install [Python](https://www.python.org/downloads/latest/python3.13/).**
+1. **`git clone`** or **download and unzip** this
+   [repository](https://github.com/lukavuko/keep-elentra-alive/archive/refs/heads/master.zip).
+2. **Add the extension.** Open [`brave://extensions`](brave://extensions) or
+   [`chrome://extensions`](chrome://extensions), turn on Developer mode, click
+   **Load unpacked**, and pick the `brave-extension` folder.
+3. **Start the script.** Double-click `run-keepalive-for-Windows.bat` (Windows)
+   or `run-keepalive-for-macOS.command` (macOS). Ctrl+C or close the window to
+   stop it.
+4. **Check the badge** (pin the extension): **ON** = kept alive, **…** =
+   running but not logged in, **OFF** = script not running.
 
-1. **`git clone`** or directly **download and unzip** the contents of this [repository](https://github.com/lukavuko/keep-elentra-alive/archive/refs/heads/master.zip).
+> Updating? Click reload ↻ on the extension's card so the browser loads the new
+> code.
 
-2. **Add the extension to your browser**: visit [`brave://extensions`](brave://extensions) or [`chrome://extensions`](chrome://extensions)
-   - → enable Developer mode
-   - → click **Load unpacked**
-   - → select the `brave-extension` folder
+## ⚙️ How it works
 
-3. **Start** the script any time by double-clicking `run-keepalive-for-Windows.bat` on Windows or `run-keepalive-for-macOS.command` on macOS, and observe the logs. Use Ctrl+C to stop it or simply close to shut it down.
+1. **Extension** (`brave-extension/`): an MV3 extension that reads your Elentra
+   and SSO cookies, including httpOnly ones, and sends them to
+   `127.0.0.1:8765`.
+2. **Script** (`elentra_keepalive.py`): listens on `127.0.0.1:8765`. Once it has
+   a valid cookie, it pings the Elentra dashboard every ~15 minutes (± 3).
 
-4. **Check the toolbar badge** (pin the extension to see it): **ON** means your session is being kept alive, **…** means the script is running but you're not logged in, and **OFF** means the script isn't running.
-
-> Updating from an older version? Hit the reload ↻ button on the extension's card in `brave://extensions` so the browser picks up the new extension code.
-
-## ⚙️ How does this program work?
-
-Two moving parts:
-
-1. **Browser extension** — `brave-extension/`
-   An MV3 extension that waits for and reads your Elentra + SSO cookies (including httpOnly ones). Once available, it pushes them to your local listener at `127.0.0.1:8765`.
-2. **Python script** — `elentra_keepalive.py`
-   Listens on `127.0.0.1:8765` until a valid cookie is received. Once validated, it pings the Elentra dashboard every ~15 minutes (± up to 3 minutes of jitter) to keep the session warm. Without a live cookie, it just keeps listening for one.
-
-The terminal only prints a line when something changes (logged in, expired, network trouble); routine pings just update a single status line at the bottom. The screen is cleared each time you're logged back in.
+The terminal prints a line only when something changes. Routine pings update one
+status line.
 
 #### 🔁 Silent re-login
 
-If your Elentra session ends but your CWL (SSO) session is still valid, the script asks the extension to open Elentra in a **background tab** for a few seconds. The browser completes the SSO round trip on its own, with no password or MFA, and the tab closes itself. If that doesn't work, you'll see _"Silent re-login didn't work — please log in to Elentra in Brave."_ It tries once each time you're logged out.
+If Elentra logs you out but your CWL session is still valid, the extension opens
+Elentra in a background tab for a few seconds. SSO completes on its own, with no
+password or MFA, and the tab closes. If that fails, you'll see _"Silent re-login
+didn't work — please log in to Elentra in Brave."_ It tries once per logout.
 
-The page it loads defaults to `https://ubc.elentra.cloud/`. To use a different one, set the `ELENTRA_LOGIN_URL` environment variable or pass `--login-url`. It must be an `https://ubc.elentra.cloud/...` address; the extension refuses to open anything else.
+The page defaults to `https://ubc.elentra.cloud/`. Change it with the
+`ELENTRA_LOGIN_URL` environment variable or `--login-url`. It must start with
+`https://ubc.elentra.cloud/`.
 
 ## 🌐 Browser support
 
-Built and tested in **Brave**, but it's a plain MV3 extension using only standard `chrome.*` APIs — no Brave-specific behavior. It loads and runs the same way in **Chrome** (and any other Chromium-based browser) via `chrome://extensions` → Developer mode → Load unpacked. Firefox is not supported yet.
+Built in **Brave**. Works in **Chrome** and other Chromium browsers the same
+way. Firefox is not supported.
 
 ## 📋 Requirements
 
 - Python 3.9+
-- [`requests`](https://pypi.org/project/requests/) — install with `pip install requests`
-- A Chromium-based browser (Brave, Chrome, Edge, etc.) to run the companion extension
+- [`requests`](https://pypi.org/project/requests/): `pip install requests`
+- A Chromium-based browser (Brave, Chrome, Edge)
 
 ## 🤔 Considerations
 
-#### Why do I need an extension? Why not just read Brave's/Chrome's cookie database directly?
+#### Why an extension?
 
-> On current Chromium-based browsers, the `Cookies` SQLite file is held under an exclusive OS lock while the browser runs (external reads are refused). On top of that, App-Bound Encryption re-encrypts cookie values in a way that can't be decrypted outside the browser process. The companion extension sidesteps both by handing over the already-decrypted cookie itself and catching new logins the moment they happen.
+> While a Chromium browser runs, its cookie file is locked, and the values are
+> encrypted so only the browser can read them. The extension hands over the
+> cookie directly and catches new logins as they happen.
 
-#### 🔒 Does this program store my credentials?
+#### 🔒 Does it store my credentials?
 
-> **No.** It uses what's called a browser cookie. Elentra sends you a cookie after you "shake its hand" logging in. Cookies are randomly generated tokens websites use to remember you, and they eventually expire, forcing you to log in again or refresh the session. This program stores only the current session cookies in use — outside the project folder, in `%LOCALAPPDATA%\elentra-keepalive\cookies.json` on Windows (or `~/.local/state/elentra-keepalive/cookies.json` on Linux/Mac) — and they never leave your machine except to Elentra itself.
+> **No.** It stores only the session cookies, in
+> `%LOCALAPPDATA%\elentra-keepalive\cookies.json` (Windows) or
+> `~/.local/state/elentra-keepalive/cookies.json` (Linux/Mac). They are sent
+> nowhere but Elentra.
 
-#### 🛡️ Security notes
+#### 🛡️ Security
 
-> The local python listener binds to `127.0.0.1` only — nothing off your machine can reach it. Every cookie the extension pushes is **validated against Elentra before being adopted**, so a stray or forged request can't do anything to a working session.
+> The script listens on `127.0.0.1` only. Every cookie is checked against
+> Elentra before use, so a forged request can't break a working session.
 >
-> The extension only sends your cookies to `127.0.0.1`, nowhere else. The only other thing it does is the silent re-login tab, and that is hard-limited to `https://ubc.elentra.cloud`.
+> The extension sends cookies only to `127.0.0.1`. Its re-login tab can only
+> open `https://ubc.elentra.cloud`.
 
-#### 🔋Battery Usage
+#### 🔋 Battery
 
-> **Little to none**. This is a lightweight python script that pings every 15 or so minutes, running directly out of terminal.
+> **Little to none.** One ping every ~15 minutes.
 
 ## ⚠️ Disclaimer
 
-This is an independent, unofficial hobby project — it is **not affiliated with, endorsed by, or supported by UBC or Elentra**. It automates nothing beyond what you could already do by keeping a browser tab open and periodically refreshing it, and it never touches, stores, or transmits your CWL credentials. Use at your own discretion and in line with your institution's acceptable-use policies.
+An unofficial hobby project. **Not affiliated with, endorsed by, or supported by
+UBC or Elentra.** It does nothing more than keeping a tab open and refreshing
+it, and it never touches your CWL credentials. Use it within your institution's
+acceptable-use policies.
 
 ## 📑 A note on AI
 
-Portions of this project (code, debugging, and documentation) were developed with the assistance of AI tools. Everything has been reviewed and tested by a human before being published.
+Parts of this project were built with AI help. A human reviewed and tested
+everything before publishing.
 
 ## 📄 License
 
-[MIT](LICENSE) — do whatever you like with this, no warranty provided.
+[MIT](LICENSE). No warranty.
