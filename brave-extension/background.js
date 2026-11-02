@@ -221,6 +221,14 @@ function pageAgent(mode, username, password) {
   }
 
   if (mode === "fill") {
+    // Re-check here: the tab may have navigated since the caller looked, and
+    // the login must only ever be posted back to CWL itself.
+    const form0 = (pw || user || {}).form;
+    const action = form0 ? new URL(form0.action, location.href) : null;
+    if (location.protocol !== "https:" || location.hostname !== "authentication.ubc.ca" || !action || action.origin !== location.origin) {
+      info.refused = true;
+      return info;
+    }
     const set = (el, v) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, v);
       el.dispatchEvent(new Event("input", { bubbles: true }));

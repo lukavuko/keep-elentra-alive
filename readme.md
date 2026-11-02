@@ -19,7 +19,11 @@ timing out.
    or `run-keepalive-for-macOS.command` (macOS). Ctrl+C or close the window to
    stop it.
 4. **Check the badge** (pin the extension): **ON** = kept alive, **…** =
-   running but not logged in, **OFF** = script not running.
+   running but not logged in, **OFF** = script not running. Click the icon to
+   make the script re-check right away.
+5. **Optional: save your CWL login** so you're logged back in after the laptop
+   sleeps. Double-click `save-login-for-Windows.bat` or
+   `save-login-for-macOS.command`. See [Re-login after sleep](#-re-login-after-sleep).
 
 > Updating? Click reload ↻ on the extension's card so the browser loads the new
 > code.
@@ -32,15 +36,39 @@ timing out.
 2. **Script** (`elentra_keepalive.py`): listens on `127.0.0.1:8765`. Once it has
    a valid cookie, it pings the Elentra dashboard every ~15 minutes (± 3).
 
+The script only ever talks to Elentra. If Elentra redirects a ping to the CWL
+login server, that just means "logged out"; the script stops there. (Older
+versions followed that redirect, which is what caused the _"Stale Request"_
+page when you logged in.) While you have a CWL login page open, the script
+holds off.
+
 The terminal prints a line only when something changes. Routine pings update one
 status line.
 
-#### 🔁 Silent re-login
+#### 📝 Logs
 
-If Elentra logs you out but your CWL session is still valid, the extension opens
-Elentra in a background tab for a few seconds. SSO completes on its own, with no
-password or MFA, and the tab closes. If that fails, you'll see _"Silent re-login
-didn't work — please log in to Elentra in Brave."_ It tries once per logout.
+Detailed logs are kept for 14 days in `%LOCALAPPDATA%\elentra-keepalive\logs`
+(Windows) or `~/.local/state/elentra-keepalive/logs` (macOS/Linux). They
+include every ping result, every push from the extension and each step of a
+background re-login. They never contain cookie values, passwords or full URLs.
+Run with `--debug` to see the same detail in the terminal.
+
+#### 🔁 Re-login after sleep
+
+When the computer wakes (or the session dies), the extension opens Elentra in a
+background tab. If your CWL session is still valid, that's enough. If CWL asks
+for your username and password, the extension fills in the login you saved with
+the save-login launcher, and the tab closes once you're back on Elentra. It
+tries up to 3 times (immediately, then after 2 and 5 minutes), and starts over
+the next time the computer wakes.
+
+- Your login is stored in the OS keychain (Windows Credential Manager / macOS
+  Keychain), never in a file. It is handed to the extension once per re-login
+  attempt, only while that attempt is running.
+- If CWL rejects it, autofill switches off until you save it again, so a
+  changed password can't lock your account with retries.
+- If CWL asks for MFA (e.g. on a VPN), the re-login waits for it, then gives up.
+- Remove it with `python elentra_keepalive.py --forget-login`.
 
 The page defaults to `https://ubc.elentra.cloud/`. Change it with the
 `ELENTRA_LOGIN_URL` environment variable or `--login-url`. It must start with
@@ -54,7 +82,9 @@ way. Firefox is not supported.
 ## 📋 Requirements
 
 - Python 3.9+
-- [`requests`](https://pypi.org/project/requests/): `pip install requests`
+- [`requests`](https://pypi.org/project/requests/) and
+  [`keyring`](https://pypi.org/project/keyring/): `pip install -r requirements.txt`
+  (the script installs them itself if missing)
 - A Chromium-based browser (Brave, Chrome, Edge)
 
 ## 🤔 Considerations
@@ -67,7 +97,9 @@ way. Firefox is not supported.
 
 #### 🔒 Does it store my credentials?
 
-> **No.** It stores only the session cookies, in
+> **Only if you ask it to**, and only in your OS keychain (see
+> [Re-login after sleep](#-re-login-after-sleep)). Otherwise it stores only the
+> Elentra session cookies, in
 > `%LOCALAPPDATA%\elentra-keepalive\cookies.json` (Windows) or
 > `~/.local/state/elentra-keepalive/cookies.json` (Linux/Mac). They are sent
 > nowhere but Elentra.
@@ -77,8 +109,14 @@ way. Firefox is not supported.
 > The script listens on `127.0.0.1` only. Every cookie is checked against
 > Elentra before use, so a forged request can't break a working session.
 >
-> The extension sends cookies only to `127.0.0.1`. Its re-login tab can only
-> open `https://ubc.elentra.cloud`.
+> The extension sends only Elentra cookies, and only to `127.0.0.1`. Its
+> re-login tab can only open `https://ubc.elentra.cloud`, and it fills a saved
+> login only into that tab.
+>
+> The saved login travels from the script to the extension over `127.0.0.1`,
+> guarded by a fixed token and refused to web pages. Any program running as you
+> could read it from the keychain anyway, but on a computer shared with other
+> user accounts, don't save a login.
 
 #### 🔋 Battery
 
@@ -88,7 +126,8 @@ way. Firefox is not supported.
 
 An unofficial hobby project. **Not affiliated with, endorsed by, or supported by
 UBC or Elentra.** It does nothing more than keeping a tab open and refreshing
-it, and it never touches your CWL credentials. Use it within your institution's
+it. It touches your CWL login only if you save one, and then only to fill
+the CWL login form for you. Use it within your institution's
 acceptable-use policies.
 
 ## 📑 A note on AI
