@@ -291,7 +291,7 @@ async function onRefreshPage(tabId, url) {
     if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a password; no saved login (or it's blocked)" });
     await setRefresh({ pwSent: true, userSent: true });
     const res = await runAgent(tabId, "fill", c.username, c.password);
-    report("refresh-submitted", { step: "password", submitted: !!(res && res.submitted) });
+    report("refresh-submitted", { step: "password", submitted: !!(res && res.submitted), refused: !!(res && res.refused) });
   } else if (info.hasUser) {
     // Two-step form (username first).
     if (r.userSent) return finishRefresh("refresh-login-rejected", { error: info.error, step: "username" });
@@ -299,7 +299,7 @@ async function onRefreshPage(tabId, url) {
     if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a username; no saved login (or it's blocked)" });
     await setRefresh({ userSent: true });
     const res = await runAgent(tabId, "fill", c.username, null);
-    report("refresh-submitted", { step: "username", submitted: !!(res && res.submitted) });
+    report("refresh-submitted", { step: "username", submitted: !!(res && res.submitted), refused: !!(res && res.refused) });
   }
   // Otherwise (redirect page, MFA prompt...) wait for the next page or the timeout.
 }

@@ -54,7 +54,13 @@ try:
 except ImportError:
     req_file = Path(__file__).resolve().parent / "requirements.txt"
     print(f"Missing dependencies — installing from {req_file} ...", file=sys.stderr)
-    subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req_file)], check=True)
+    if subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req_file)]).returncode != 0:
+        # Typically Homebrew/system Python on macOS refusing pip installs (PEP 668).
+        sys.exit(
+            "\nCouldn't install the dependencies automatically.\n"
+            "Install Python from https://www.python.org/downloads/ and run this again, or run:\n"
+            f'  "{sys.executable}" -m pip install --user -r "{req_file}"'
+        )
     import keyring
     import requests
 
