@@ -255,11 +255,18 @@ def next_delay(interval: int) -> int:
 
 
 def _prevent_sleep() -> None:
-    """Ask Windows not to idle-sleep while this process runs (a closed lid or the
-    Start-menu Sleep still sleeps — the wake handling below covers that)."""
+    """Ask the OS not to idle-sleep while this process runs (closing the lid or
+    choosing Sleep still sleeps — the wake handling covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
         log.info("Keeping this PC awake while running — close me when you're done.")
+    elif sys.platform == "darwin":
+        # caffeinate -w exits by itself when this process does.
+        try:
+            subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log.info("Keeping this Mac awake while running — close me when you're done.")
+        except OSError:
+            log.debug("caffeinate not available; the Mac may idle-sleep.")
 
 
 _sigint_count = 0
