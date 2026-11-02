@@ -74,6 +74,7 @@ MAX_HOPS = 5  # same-host redirects followed per ping
 # While logged out, re-check only when the cookies change, on wake/resync, or
 # at this slow cadence (Elentra may keep the same cookie across a re-login).
 WAITING_RECHECK = 300
+ACQUIRE_WAIT = 10  # loop cadence while logged out (pings are gated separately)
 WAIT_SLICE = 30  # sleep in slices this long so a suspend/resume is noticed
 RESUME_GAP = 60  # wall clock jumping this far past a slice = we were asleep
 
@@ -650,7 +651,7 @@ def check_session(session: requests.Session, url: str) -> tuple[str, list[str]]:
     title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S)
     if title:
         trail.append(f"title={title.group(1).strip()[:60]!r}")
-    if "samlrequest" in body or 'name="j_username"' in body or 'type="password"' in body:
+    if "samlrequest" in body or 'name="j_username"' in body:
         trail.append("login form in page")
         return "dead", trail
     return "alive", trail
@@ -791,8 +792,6 @@ def run_auto_loop(args) -> int:
 
         if objs is None:
             note(logging.WARNING, "Waiting for the browser extension — is it loaded and enabled?")
-        elif verdict is None and SESSION_COOKIE in flat:
-            pass  # cookies unchanged since they were found dead; nothing new to check
         else:
             maybe_refresh = objs or saved_login()
             if attempt_open and time.monotonic() - attempts[-1] > REFRESH_WINDOW:
@@ -821,8 +820,6 @@ def run_auto_loop(args) -> int:
     log.info("Stopped.")
     return 0
 
-
-ACQUIRE_WAIT = 10  # loop cadence while logged out (pings are gated separately)
 
 
 def main() -> int:

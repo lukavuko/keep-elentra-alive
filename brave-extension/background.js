@@ -1,35 +1,34 @@
 // Elentra Keepalive Cookie Bridge — MV3 service worker.
 //
-// Reads the UBC Elentra session cookies (including httpOnly ones the page's
-// document.cookie can't see) and POSTs them to the local keepalive script.
-// Fires on cookie changes (you log in / out / they rotate), on a 1-minute
-// alarm, and on startup — so the script is fed whether it or the browser
-// started first.
+// Pushes the Elentra session cookies (including httpOnly ones) to the local
+// keepalive script: on cookie changes, on a 1-minute alarm, on browser start,
+// when the computer wakes (idle API), and when you click the toolbar icon.
 //
-// The script's reply drives the toolbar badge (ON / … / OFF) and can ask for a
-// silent re-login: Elentra is loaded in a background tab so a still-valid SSO
-// session re-issues the Elentra cookies, then the tab is closed.
+// Only ubc.elentra.cloud cookies are sent. CWL login-server cookies never leave
+// the browser — the script used to replay them, which started competing logins
+// and caused "Stale Request" on the CWL login page.
+//
+// The script's reply drives the badge and can ask for a background re-login:
+// Elentra is opened in an inactive tab; if CWL shows its login form there, the
+// saved login (OS keychain, via the script) is filled in. Every step is
+// reported to the script's log so failures can be diagnosed.
 //
 // Keep PORT and TOKEN in sync with elentra_keepalive.py (LISTEN_PORT, PUSH_TOKEN).
 
 const PORT = 8765;
-const ENDPOINT = `http://127.0.0.1:${PORT}/cookies`;
+const SCRIPT = `http://127.0.0.1:${PORT}`;
 const TOKEN = "elentra-keepalive-local";
 
-// The only origin a refresh tab may ever be opened on, whatever the script asks.
-const ELENTRA_ORIGIN = "https://ubc.elentra.cloud";
+const ELENTRA_HOST = "ubc.elentra.cloud";
+const ELENTRA_ORIGIN = `https://${ELENTRA_HOST}`; // the only origin a refresh tab may open
+const IDP_HOST = "authentication.ubc.ca";
 
-// Cookies we care about live on these registrable domains (gather() queries
-// ubc.elentra.cloud specifically, which also matches its subdomains).
-const DOMAINS = ["ubc.elentra.cloud", "authentication.ubc.ca"];
+const LOGIN_BUSY_MS = 2 * 60 * 1000; // a CWL page navigated this recently = you're logging in
+const REFRESH_TIMEOUT_MIN = 1.5;
 
 const BADGES = {
-  alive: ["ON", "#2e7d32", "Elentra keepalive: session alive"],
-  waiting: [
-    "…",
-    "#f9a825",
-    "Elentra keepalive: running, waiting for a live Elentra session",
-  ],
+  alive: ["ON", "#2e7d32", "Elentra keepalive: session alive (click to resync)"],
+  waiting: ["…", "#f9a825", "Elentra keepalive: running, waiting for a live Elentra session (click to resync)"],
   off: ["OFF", "#757575", "Elentra keepalive: script not running"],
 };
 
@@ -40,67 +39,102 @@ function setBadge(state) {
   chrome.action.setTitle({ title });
 }
 
-function relevant(domain) {
-  if (!domain) return false;
-  const d = domain.replace(/^\./, "");
-  return DOMAINS.some((base) => d === base || d.endsWith("." + base));
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (e) {
+    return "";
+  }
 }
 
-async function gather() {
-  const seen = new Set();
-  const out = [];
-  for (const domain of DOMAINS) {
-    let list = [];
-    try {
-      list = await chrome.cookies.getAll({ domain });
-    } catch (e) {
-      // ignore; domain may simply have no cookies
-    }
-    for (const c of list) {
-      const key = `${c.name} ${c.domain} ${c.path}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        secure: c.secure,
-        httpOnly: c.httpOnly,
-      });
-    }
+// host/path only — query strings carry SAML requests.
+function safe(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname + u.pathname;
+  } catch (e) {
+    return "?";
   }
-  return out;
 }
+
+const isElentra = (d) => {
+  d = (d || "").replace(/^\./, "");
+  return d === ELENTRA_HOST || d.endsWith("." + ELENTRA_HOST);
+};
+
+async function gather() {
+  let list = [];
+  try {
+    list = await chrome.cookies.getAll({ domain: ELENTRA_HOST });
+  } catch (e) {}
+  return list
+    .filter((c) => isElentra(c.domain))
+    .map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly }));
+}
+
+async function post(path, body) {
+  const res = await fetch(SCRIPT + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: TOKEN, ...body }),
+  });
+  return res.ok ? res.json().catch(() => ({})) : null;
+}
+
+function report(event, detail = {}) {
+  return post("/event", { event, detail }).catch(() => {});
+}
+
+// --- You logging in yourself ---------------------------------------------- //
+// Remembered so the script holds off while you're mid-login (a parallel
+// background login would make your form stale).
+
+async function noteIdpActivity() {
+  await chrome.storage.session.set({ idpActivity: Date.now() });
+}
+
+async function loginInProgress() {
+  const { idpActivity } = await chrome.storage.session.get("idpActivity");
+  return !!idpActivity && Date.now() - idpActivity < LOGIN_BUSY_MS;
+}
+
+// --- Push ------------------------------------------------------------------ //
 
 async function push(reason) {
   const cookies = await gather();
-  let reply = {};
+  let reply;
   try {
-    const res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: TOKEN, reason, cookies }),
-    });
-    reply = await res.json().catch(() => ({}));
+    reply = await post("/cookies", { reason, cookies, loginInProgress: await loginInProgress() });
   } catch (e) {
-    // Script isn't running yet — that's fine; the alarm will retry.
     console.debug("elentra-keepalive: push failed:", e.message);
     setBadge("off");
-    return;
+    return null;
   }
+  reply = reply || {};
   setBadge(reply.state);
-  if (reply.action && reply.action.type === "refresh")
-    silentRefresh(reply.action.url);
+  if (reply.action && reply.action.type === "refresh") silentRefresh(reply.action.url);
+  // After a wake/resync the script decides on a re-login a moment later; come
+  // back for it instead of waiting for the 1-minute alarm.
+  if ((reason === "resume" || reason === "resync") && reply.state !== "alive") {
+    setTimeout(() => push("followup"), 15000);
+  }
+  return reply;
 }
 
-// --- Silent re-login ------------------------------------------------------ //
-// The refresh tab id lives in storage.session so it survives service-worker
-// restarts; the timeout is an alarm for the same reason.
+// --- Background re-login --------------------------------------------------- //
+// State lives in storage.session so it survives service-worker restarts; the
+// saved login is kept only in memory, only for the duration of one attempt.
 
-async function refreshTabId() {
-  const { refreshTab } = await chrome.storage.session.get("refreshTab");
-  return refreshTab;
+let creds = null;
+
+async function getRefresh() {
+  const { refresh } = await chrome.storage.session.get("refresh");
+  return refresh;
+}
+
+async function setRefresh(patch) {
+  const cur = (await getRefresh()) || {};
+  await chrome.storage.session.set({ refresh: { ...cur, ...patch } });
 }
 
 async function silentRefresh(url) {
@@ -111,37 +145,172 @@ async function silentRefresh(url) {
     return;
   }
   if (target.origin !== ELENTRA_ORIGIN) return;
-  if ((await refreshTabId()) !== undefined) return; // one at a time
-
+  if (await getRefresh()) return; // one at a time
+  if (await loginInProgress()) {
+    report("refresh-skipped", { why: "you have a CWL login page open" });
+    return;
+  }
+  creds = null;
   const tab = await chrome.tabs.create({ url: target.href, active: false });
-  await chrome.storage.session.set({ refreshTab: tab.id });
-  chrome.alarms.create("refresh-timeout", { delayInMinutes: 1 });
+  await chrome.storage.session.set({
+    refresh: { tabId: tab.id, sawIdp: false, userSent: false, pwSent: false, clicked: false, last: safe(target.href) },
+  });
+  chrome.alarms.create("refresh-timeout", { delayInMinutes: REFRESH_TIMEOUT_MIN });
+  report("refresh-opened", { url: safe(target.href) });
 }
 
-async function endRefresh(close) {
-  const id = await refreshTabId();
-  if (id === undefined) return;
-  await chrome.storage.session.remove("refreshTab");
+async function finishRefresh(result, detail = {}, close = true) {
+  const r = await getRefresh();
+  if (!r) return;
+  creds = null;
+  await chrome.storage.session.remove("refresh");
   chrome.alarms.clear("refresh-timeout");
-  if (close) chrome.tabs.remove(id).catch(() => {});
+  if (close) chrome.tabs.remove(r.tabId).catch(() => {});
+  await report(result, { last: r.last, sawIdp: r.sawIdp, ...detail });
+  push("refresh-done");
 }
 
-// The SSO round trip passes through the IdP; it's done once the tab settles
-// back on Elentra. Cookie changes along the way trigger pushes on their own.
+async function fetchCreds() {
+  if (creds) return creds;
+  try {
+    const c = await post("/credentials", {});
+    if (c && c.username && c.password) creds = c;
+  } catch (e) {}
+  return creds;
+}
+
+// Runs inside the page. Describes the page for the log and, if given a
+// username/password, fills the visible login form and submits it.
+function pageAgent(mode, username, password) {
+  const visible = (el) => !!el && !el.disabled && el.getClientRects().length > 0;
+  const pw = [...document.querySelectorAll("input[type=password]")].find(visible);
+  const scope = (pw && pw.form) || document;
+  const user = [...scope.querySelectorAll("input[type=text],input[type=email],input:not([type])")].find(visible);
+  const errEl = [...document.querySelectorAll("[class*=error],[class*=alert],[role=alert]")].find(
+    (e) => visible(e) && e.textContent.trim()
+  );
+  const info = {
+    title: document.title.slice(0, 80),
+    hasPassword: !!pw,
+    hasUser: !!user,
+    error: errEl ? errEl.textContent.trim().replace(/\s+/g, " ").slice(0, 160) : "",
+    forms: [...document.forms].map((f) => {
+      try {
+        const u = new URL(f.action, location.href);
+        return u.hostname + u.pathname;
+      } catch (e) {
+        return "?";
+      }
+    }),
+  };
+
+  if (mode === "elentra") {
+    // Elentra's own sign-in page: click through to CWL.
+    const cands = [...document.querySelectorAll("a[href],button,input[type=submit]")].filter(visible);
+    const pick =
+      cands.find((el) => (el.href || "").includes("authentication.ubc.ca")) ||
+      cands.find((el) => /\bcwl\b/i.test(el.textContent || el.value || "")) ||
+      cands.find((el) => /\b(log|sign)\s?in\b/i.test(el.textContent || el.value || "") && !/out/i.test(el.textContent || ""));
+    info.clicked = pick ? (pick.textContent || pick.value || "").trim().slice(0, 40) : "";
+    if (pick) pick.click();
+    return info;
+  }
+
+  if (mode === "fill") {
+    const set = (el, v) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    if (user && username) set(user, username);
+    if (pw && password) set(pw, password);
+    const form = (pw || user || {}).form;
+    const btn = form && form.querySelector("button[type=submit],input[type=submit],button:not([type])");
+    if (btn) btn.click();
+    else if (form) form.requestSubmit();
+    info.submitted = !!form;
+  }
+  return info;
+}
+
+async function runAgent(tabId, mode, username = null, password = null) {
+  try {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId }, func: pageAgent, args: [mode, username, password] });
+    return res && res.result;
+  } catch (e) {
+    report("refresh-agent-error", { mode, error: String(e.message).slice(0, 120) });
+    return null;
+  }
+}
+
+async function onRefreshPage(tabId, url) {
+  const r = await getRefresh();
+  if (!r || r.tabId !== tabId) return;
+  const host = hostOf(url);
+  await setRefresh({ last: safe(url) });
+
+  if (host === ELENTRA_HOST) {
+    if (r.sawIdp) return finishRefresh("refresh-returned");
+    // Landed on Elentra without visiting CWL: either still logged in, or this
+    // is Elentra's own sign-in page.
+    const reply = await push("refresh-landed");
+    if (reply && reply.state === "alive") return finishRefresh("refresh-returned");
+    if (r.clicked) return; // already clicked through once; let the timeout decide
+    await setRefresh({ clicked: true });
+    const info = await runAgent(tabId, "elentra");
+    report("refresh-elentra-page", { url: safe(url), ...info });
+    return;
+  }
+
+  if (host !== IDP_HOST) {
+    report("refresh-other-page", { url: safe(url) });
+    return;
+  }
+
+  await setRefresh({ sawIdp: true });
+  const info = await runAgent(tabId, "describe");
+  if (!info) return;
+  report("refresh-cwl-page", { url: safe(url), ...info });
+
+  if (info.hasPassword) {
+    // The form came back after we already sent the password: wrong login.
+    // Never resubmit — repeated failures can lock the CWL account.
+    if (r.pwSent) return finishRefresh("refresh-login-rejected", { error: info.error });
+    const c = await fetchCreds();
+    if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a password; no saved login (or it's blocked)" });
+    await setRefresh({ pwSent: true, userSent: true });
+    const res = await runAgent(tabId, "fill", c.username, c.password);
+    report("refresh-submitted", { step: "password", submitted: !!(res && res.submitted) });
+  } else if (info.hasUser) {
+    // Two-step form (username first).
+    if (r.userSent) return finishRefresh("refresh-login-rejected", { error: info.error, step: "username" });
+    const c = await fetchCreds();
+    if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a username; no saved login (or it's blocked)" });
+    await setRefresh({ userSent: true });
+    const res = await runAgent(tabId, "fill", c.username, null);
+    report("refresh-submitted", { step: "username", submitted: !!(res && res.submitted) });
+  }
+  // Otherwise (redirect page, MFA prompt...) wait for the next page or the timeout.
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
-  if (info.status !== "complete" || !tab.url) return;
-  if (tabId !== (await refreshTabId())) return;
-  if (new URL(tab.url).origin === ELENTRA_ORIGIN) endRefresh(true);
+  const url = info.url || tab.url;
+  if (!url) return;
+  const r = await getRefresh();
+  if (r && r.tabId === tabId) {
+    if (info.status === "complete") onRefreshPage(tabId, tab.url);
+    return;
+  }
+  if (hostOf(url) === IDP_HOST) noteIdpActivity();
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (tabId === (await refreshTabId())) endRefresh(false);
+  const r = await getRefresh();
+  if (r && r.tabId === tabId) finishRefresh("refresh-closed", { why: "tab closed" }, false);
 });
 
 // --- Triggers --------------------------------------------------------------- //
 
-// Debounce bursts of cookie changes into a single push. Kept short — MV3
-// service workers can be torn down while a longer timer is still pending.
 let pending = null;
 function schedule(reason) {
   if (pending) clearTimeout(pending);
@@ -152,26 +321,29 @@ function schedule(reason) {
 }
 
 chrome.cookies.onChanged.addListener((info) => {
-  if (relevant(info.cookie.domain)) schedule("cookie-change");
+  if (isElentra(info.cookie.domain)) schedule("cookie-change");
 });
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("push", { periodInMinutes: 1 });
-  push("installed");
+// Fires when the screen unlocks / the computer wakes and you come back.
+chrome.idle.onStateChanged.addListener((state) => {
+  if (state === "active") push("resume");
 });
 
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("push", { periodInMinutes: 1 });
-  push("startup");
-});
+chrome.action.onClicked.addListener(() => push("resync"));
 
-chrome.alarms.onAlarm.addListener((a) => {
+chrome.runtime.onInstalled.addListener(() => push("installed"));
+chrome.runtime.onStartup.addListener(() => push("startup"));
+
+chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === "push") push("alarm");
-  else if (a.name === "refresh-timeout") endRefresh(true);
+  else if (a.name === "refresh-timeout") {
+    const r = await getRefresh();
+    finishRefresh("refresh-timeout", { stuckAt: r ? r.last : "?" });
+  }
 });
 
-// Ensure the alarm exists whenever the worker spins up. Don't push here too —
-// onInstalled/onStartup/onAlarm already cover it, and the alarm firing is
-// itself what respawns the worker, so an unconditional push here doubles up
-// with the onAlarm handler for the same tick.
-chrome.alarms.create("push", { periodInMinutes: 1 });
+// Create the alarm only if missing — re-creating it on every worker start-up
+// would keep resetting its 1-minute schedule.
+chrome.alarms.get("push").then((a) => {
+  if (!a) chrome.alarms.create("push", { periodInMinutes: 1 });
+});
