@@ -452,7 +452,7 @@ def build_jar(objs: list[dict]) -> requests.cookies.RequestsCookieJar:
 # --------------------------------------------------------------------------- #
 MAX_PUSH_BYTES = 1 << 20
 EVENT_NAME = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
-REFRESH_RESULTS = {"refresh-returned", "refresh-timeout", "refresh-login-rejected", "refresh-skipped", "refresh-closed"}
+REFRESH_RESULTS = {"refresh-returned", "refresh-timeout", "refresh-login-rejected", "refresh-skipped", "refresh-closed", "refresh-no-login"}
 
 
 class _PushHandler(BaseHTTPRequestHandler):

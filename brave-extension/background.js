@@ -205,6 +205,10 @@ function pageAgent(mode, username, password) {
   };
 
   if (mode === "elentra") {
+    // Logged in already? (a visible log-out control) — nothing to click.
+    const all = [...document.querySelectorAll("a,button")].filter(visible);
+    info.loggedIn = all.some((el) => /(log|sign)\s?out/i.test(el.textContent || ""));
+    if (info.loggedIn) return info;
     // Elentra's own sign-in page: click through to CWL.
     const cands = [...document.querySelectorAll("a[href],button,input[type=submit]")].filter(visible);
     const pick =
@@ -253,12 +257,11 @@ async function onRefreshPage(tabId, url) {
     if (r.sawIdp) return finishRefresh("refresh-returned");
     // Landed on Elentra without visiting CWL: either still logged in, or this
     // is Elentra's own sign-in page.
-    const reply = await push("refresh-landed");
-    if (reply && reply.state === "alive") return finishRefresh("refresh-returned");
     if (r.clicked) return; // already clicked through once; let the timeout decide
     await setRefresh({ clicked: true });
     const info = await runAgent(tabId, "elentra");
     report("refresh-elentra-page", { url: safe(url), ...info });
+    if (info && info.loggedIn) return finishRefresh("refresh-returned", { note: "already logged in" });
     return;
   }
 
