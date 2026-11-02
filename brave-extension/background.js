@@ -207,7 +207,7 @@ function pageAgent(mode, username, password) {
   if (mode === "elentra") {
     // Logged in already? (a visible log-out control) — nothing to click.
     const all = [...document.querySelectorAll("a,button")].filter(visible);
-    info.loggedIn = all.some((el) => /(log|sign)\s?out/i.test(el.textContent || ""));
+    info.loggedIn = all.some((el) => /\b(log|sign)\s?out\b/i.test(el.textContent || ""));
     if (info.loggedIn) return info;
     // Elentra's own sign-in page: click through to CWL.
     const cands = [...document.querySelectorAll("a[href],button,input[type=submit]")].filter(visible);
