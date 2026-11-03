@@ -132,7 +132,9 @@ way. Firefox is not supported.
 >
 > The extension sends only Elentra cookies, and only to `127.0.0.1`. Its
 > re-login tab can only open `https://ubc.elentra.cloud`, and it fills a saved
-> login only into that tab.
+> login only into that tab. Its `webRequest` permission only observes page
+> loads in that tab (address, status code) for the log. It never blocks or
+> changes them.
 >
 > The saved login travels from the script to the extension over `127.0.0.1`,
 > guarded by a fixed token and refused to web pages. Any program running as you
