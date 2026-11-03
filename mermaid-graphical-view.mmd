@@ -1,10 +1,11 @@
 ---
 title: How Elentra Keepalive keeps you logged in
 config:
+  layout: dagre
   theme: default
   themeVariables:
     fontFamily: "Segoe UI, Helvetica Neue, Arial, sans-serif"
-    fontSize: 18px
+    fontSize: 17px
     background: "#ffffff"
     primaryColor: "#ffffff"
     primaryTextColor: "#1b1f24"
@@ -58,10 +59,10 @@ flowchart TD
     %% ---------- 4. Main loop ----------
     subgraph Loop["3 · The script's routine"]
         Have{"Has the extension<br/>sent a cookie?"}
-        Have -->|"Not yet"| NoExt("fa:fa-clock Shows: Waiting for you<br/>to log in. Checks again<br/>when a cookie arrives.")
+        Have ==>|"Not yet"| NoExt("fa:fa-clock Waiting for you<br/>to log in. Checks again<br/>when a cookie arrives.")
         Have ==>|"Yes"| Ping("fa:fa-heartbeat Opens the Elentra dashboard<br/>with your cookie")
         Ping --> Res{"What did<br/>Elentra say?"}
-        Res <-->|"No answer"| Err("fa:fa-wifi Try again in 30 seconds")
+        Res -->|"No answer?"| Err("fa:fa-wifi Try again in 30 seconds")
         Res ==>Alive("fa:fa-check-circle Logged in<br/>Ping again in ~15 min")
         Res ==>Dead("fa:fa-sign-out-alt Logged out")
         Wake("fa:fa-sun Computer just woke up:<br/>check right away")
@@ -71,23 +72,28 @@ flowchart TD
     Wake -.-> Ping
 
     %% ---------- 5. Background re-login ----------
-    subgraph Relogin["4 · Re-login"]
-        Busy{"Check if the CWL<br/> login page is open"}
+    subgraph Relogin["4 · The Auto login system"]
+        Busy{"Check: is the CWL<br/> login page is open?"}
         Busy -->|"Yes"| LetYou("fa:fa-user-clock Waits until you finish,<br/>then back to routine ↻")
         Busy -->|"No"| Attempts{"Have we exhausted any <br/>previous login attempts?"}
-        Attempts -.->|"<b>Yes</b>"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
-        Attempts -->|"<b>No</b>"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
-        Tab --> Signed{"Already signed in?<br/>(CWL session still valid)"}
-        Signed ==>|"Yes"| Back
-        Signed -->|"No"| Saved{"Is your login saved<br/> locally?"}
+        Attempts -.->|"Yes"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
+        Attempts -->|"No"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
+        Tab --> Signed{"Are you already signed in?<br/>(CWL session still valid)"}
+        
+        Signed -->|"No"| Saved{"Is login saved locally?"}
         Saved -->|"Yes"| Fill("fa:fa-keyboard Fills in and submits<br/>the CWL login form<br/>automatically")
         Saved -->|"No"| Ask
-        Fill ==>|"Success"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine carries on.")
-        Fill ==>|"Failure"| Ask
+        Fill -->|"Success"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine carries on.")
+        Fill -->|"Failure"| Ask
+
+        Signed -->Back
+        Tab ~~~ Fill
     end
 
     
-    Setup ~~~ Start
+    Setup ~~~ Browser 
+    Start ~~~ B1
+    
     S1 ==> B0
 
     %% ---------- Styling: solid fills + white text for decisions and outcomes, outlined boxes for steps ----------
