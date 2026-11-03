@@ -826,6 +826,7 @@ def run_auto_loop(args) -> int:
     force = True
     alive_since = 0.0  # wall clock, start of the current logged-in stretch
     pings_ok = 0
+    gave_up_at = -1.0  # attempts[0] of the spell we already told you to log in manually
 
     carry: list[tuple[str, str]] = []  # (tag, text) shown again right after the next console reset
 
