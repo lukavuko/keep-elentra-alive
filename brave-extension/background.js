@@ -316,6 +316,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (hostOf(url) === IDP_HOST) noteIdpActivity();
 });
 
+// Every page load in the re-login tab (method, host/path, status, redirect),
+// so the script's log shows exactly what each attempt requested. Read-only:
+// nothing is blocked or changed, and query strings are dropped.
+const REQ_FILTER = { urls: [`${ELENTRA_ORIGIN}/*`, `https://${IDP_HOST}/*`], types: ["main_frame", "sub_frame"] };
+
+async function reportRequest(d, status, redirect) {
+  if (d.tabId < 0) return;
+  const r = await getRefresh();
+  if (!r || r.tabId !== d.tabId) return;
+  report("refresh-request", { method: d.method, url: safe(d.url), status, ...(redirect ? { redirect: safe(redirect) } : {}) });
+}
+
+chrome.webRequest.onBeforeRedirect.addListener((d) => reportRequest(d, d.statusCode, d.redirectUrl), REQ_FILTER);
+chrome.webRequest.onCompleted.addListener((d) => reportRequest(d, d.statusCode), REQ_FILTER);
+chrome.webRequest.onErrorOccurred.addListener((d) => reportRequest(d, d.error), REQ_FILTER);
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const r = await getRefresh();
   if (r && r.tabId === tabId) finishRefresh("refresh-closed", { why: "tab closed" }, false);
