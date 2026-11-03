@@ -107,7 +107,7 @@ way. Firefox is not supported.
 > [Re-login after sleep](#-re-login-after-sleep)). Otherwise it stores only the
 > Elentra session cookies, in
 > `%LOCALAPPDATA%\elentra-keepalive\cookies.json` (Windows) or
-> `~/.local/state/elentra-keepalive/cookies.json` (Linux/Mac). They are sent
+> `~/.local/state/elentra-keepalive/cookies.json` (macOS/Linux). They are sent
 > nowhere but Elentra.
 
 #### 🛡️ Security
