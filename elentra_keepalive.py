@@ -150,13 +150,13 @@ SPLASHES = [
     "Also try Terraria!",
     "Made by Notch!",
     "Now with extra hugs!",
-    "Pixels are fun!",
-    "Woo, /v/!",
     "Ceci n'est pas une pipe!",
     "Lots of truthful splash texts!",
     "Don't look directly at the bugs!",
-    "Nice to meet you!",
-    "Hello, world!",
+    "100% pure!",
+    "Kind of dragon free!",
+    "Technically good!",
+    "Water proof!",
 ]
 
 
