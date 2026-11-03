@@ -237,6 +237,7 @@ function pageAgent(mode, username, password) {
     if (user && username) set(user, username);
     if (pw && password) set(pw, password);
     const form = (pw || user || {}).form;
+    info.form = `${(form0.method || "get").toUpperCase()} ${action.hostname}${action.pathname}`;
     const btn = form && form.querySelector("button[type=submit],input[type=submit],button:not([type])");
     if (btn) btn.click();
     else if (form) form.requestSubmit();
