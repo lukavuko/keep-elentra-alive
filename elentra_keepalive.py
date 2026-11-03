@@ -1012,7 +1012,10 @@ def run_auto_loop(args) -> int:
             up = _ago(time.time() - alive_since)
             _status("")
             fresh_screen()
-            ok("Ping OK (%.1f s) · logged in for %s · next ping ~%s", ping_ms / 1000, up, nxt)
+            card = ("😎  You're logged in to Elentra", f"Logged in for {up} · next check at {nxt}")
+            log.info("Ping OK (%.1f s) · logged in for %s · next ping ~%s", ping_ms / 1000, up, nxt,
+                     extra={"tag": "OK", "card": card})
+            _set_title(f"😎 Elentra · logged in since {time.strftime('%H:%M', time.localtime(alive_since))}")
             if _store.wait(delay) == "resume":
                 msg = f"Computer woke up after ~{_ago(_store.slept_for)} asleep — checking the session now."
                 log.info(msg)
