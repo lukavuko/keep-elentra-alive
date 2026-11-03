@@ -940,6 +940,7 @@ def run_auto_loop(args) -> int:
             else:
                 msg = "Logged out of Elentra in the browser."
             note(logging.WARNING, msg)
+            carry.append(("WARN", msg))
         if state != "waiting":
             attempts, attempt_open = [], False
         state = _store.state = "waiting"
