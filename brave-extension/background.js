@@ -323,8 +323,13 @@ const REQ_FILTER = { urls: [`${ELENTRA_ORIGIN}/*`, `https://${IDP_HOST}/*`], typ
 
 async function reportRequest(d, status, redirect) {
   if (d.tabId < 0) return;
-  const r = await getRefresh();
-  if (!r || r.tabId !== d.tabId) return;
+  let r = await getRefresh();
+  if (!r || r.tabId !== d.tabId) {
+    // The tab's first request can finish before silentRefresh has stored its id.
+    await new Promise((ok) => setTimeout(ok, 500));
+    r = await getRefresh();
+    if (!r || r.tabId !== d.tabId) return;
+  }
   report("refresh-request", { method: d.method, url: safe(d.url), status, ...(redirect ? { redirect: safe(redirect) } : {}) });
 }
 
