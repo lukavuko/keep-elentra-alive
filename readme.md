@@ -25,6 +25,12 @@ timing out.
    sleeps. Double-click `save-login-for-Windows.bat` or
    `save-login-for-macOS.command`. See [Re-login after sleep](#-re-login-after-sleep).
 
+> **On a Mac:** the first time you open a `.command` file, macOS may say it
+> can't be opened. Right-click it, choose **Open**, then **Open** again. If
+> macOS asks whether Python may use your keychain, choose **Always Allow** so
+> re-login works while you're away. Install Python from python.org: Homebrew's
+> Python refuses the automatic dependency install.
+
 > Updating? Click reload ↻ on the extension's card so the browser loads the new
 > code.
 
