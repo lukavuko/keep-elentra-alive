@@ -920,7 +920,7 @@ def run_auto_loop(args) -> int:
                     _store.request_refresh(args.login_url)
                     note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", transient=True)
             elif not attempt_open:
-                hint = "" if saved_login() else " (Tip: save your CWL login with --set-login.)"
+                hint = "" if saved_login() else " (Tip: save your CWL login with the save-login launcher.)"
                 note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra in the browser.{hint}")
 
         if _store.wait(ACQUIRE_WAIT) == "resume":
