@@ -187,26 +187,68 @@ class _ConsoleHandler(logging.StreamHandler):
     successful ping only the latest state is on screen. The log file always
     keeps every line."""
 
-    def __init__(self, live: bool) -> None:
+    def __init__(self, live: bool, color: bool = False) -> None:
         super().__init__()
         self.live = live
+        self.color = color
         self._status = ""
+        self._header = ""
         self._banner: list[str] = []  # formatted startup lines, redrawn after each reset
+        self._quote = ""
+        self._quote_at = 0.0
+
+    def _c(self, code: str, text: str) -> str:
+        return f"{code}{text}{_RESET}" if self.color else text
 
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, "banner", False):
             self._banner.append(self.format(record))
         if self._status:
             self.stream.write("\r\033[K")
-        super().emit(record)
+        card = getattr(record, "card", None)
+        if card and self.live:
+            # a status card instead of a log line (the log file still gets the line)
+            title, sub = card
+            self.stream.write(f"\n   {self._c(_BOLD_GREEN, title)}\n       {self._c(_GREY, sub)}\n\n")
+        else:
+            super().emit(record)
         if self._status:
             self.stream.write(self._status)
             self.flush()
 
+    def show_header(self, title: str, sub: str) -> None:
+        """A box at the very top of the window; console only."""
+        if not self.live:
+            return
+        width = max(_cols(title), _cols(sub)) + 4
+        pad = lambda s: s + " " * (width - 2 - _cols(s))  # noqa: E731
+        edge = lambda s: self._c(_CYAN, s)  # noqa: E731
+        self._header = "\n".join([
+            edge("╭" + "─" * width + "╮"),
+            edge("│") + "  " + self._c(_BOLD, pad(title)) + edge("│"),
+            edge("│") + "  " + self._c(_GREY, pad(sub)) + edge("│"),
+            edge("╰" + "─" * width + "╯"),
+        ]) + "\n\n"
+        self.acquire()
+        try:
+            self.stream.write(self._header)
+            self.flush()
+        finally:
+            self.release()
+
+    def _quote_line(self) -> str:
+        """A splash quote under the startup notes; a new random one every 2 hours."""
+        if not self.live:
+            return ""
+        if not self._quote or time.time() - self._quote_at >= QUOTE_EVERY:
+            self._quote = random.choice([q for q in SPLASHES if q != self._quote])
+            self._quote_at = time.time()
+        return " " * 17 + self._c(_ITALIC_DIM, self._quote) + "\n"
+
     def end_banner(self) -> None:
         self.acquire()
         try:
-            self.stream.write("\n")
+            self.stream.write(self._quote_line() + "\n")
             self.flush()
         finally:
             self.release()
@@ -216,8 +258,8 @@ class _ConsoleHandler(logging.StreamHandler):
             return
         self.acquire()
         try:
-            screen = "\033[2J\033[3J\033[H" + "".join(line + "\n" for line in self._banner) + "\n"
-            self.stream.write(screen + self._status)
+            screen = "\033[2J\033[3J\033[H" + self._header + "".join(line + "\n" for line in self._banner)
+            self.stream.write(screen + self._quote_line() + "\n" + self._status)
             self.flush()
         finally:
             self.release()
