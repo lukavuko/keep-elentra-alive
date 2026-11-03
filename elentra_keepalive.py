@@ -140,6 +140,48 @@ _TAG_COLORS = {
 }
 _RESET = "\033[0m"
 _GREY = "\033[90m"
+_BOLD = "\033[1m"
+_BOLD_GREEN = "\033[1;32m"
+_CYAN = "\033[36m"
+_ITALIC_DIM = "\033[2;3m"  # terminals have no opacity; dim is the closest (~75%)
+
+QUOTE_EVERY = 2 * 3600
+SPLASHES = [
+    "Also try Terraria!",
+    "Made by Notch!",
+    "Now with extra hugs!",
+    "Pixels are fun!",
+    "Woo, /v/!",
+    "Ceci n'est pas une pipe!",
+    "Lots of truthful splash texts!",
+    "Don't look directly at the bugs!",
+    "Nice to meet you!",
+    "Hello, world!",
+]
+
+
+def _cols(text: str) -> int:
+    """Terminal width of text: emoji take two columns."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
+_title_now = ""
+
+
+def _set_title(text: str) -> None:
+    """The window/taskbar title, so the state is visible without opening the window."""
+    global _title_now
+    if text == _title_now:
+        return
+    _title_now = text
+    try:
+        if os.name == "nt":
+            ctypes.windll.kernel32.SetConsoleTitleW(text)
+        elif sys.stderr.isatty():
+            sys.stderr.write(f"\033]0;{text}\007")
+            sys.stderr.flush()
+    except Exception:  # noqa: BLE001 — a nicety
+        pass
 
 
 class _TagFormatter(logging.Formatter):
