@@ -328,9 +328,9 @@ def _setup_logging(log_dir: Path | None, debug: bool, keep_days: int = 14) -> Pa
     logging.getLogger("urllib3").setLevel(logging.WARNING)  # logs full URLs
 
     ansi = sys.stderr.isatty() and (os.name != "nt" or _enable_windows_ansi())
-    _console = _ConsoleHandler(live=ansi)
-    _console.setLevel(logging.DEBUG if debug else logging.INFO)
     color = ansi and os.environ.get("NO_COLOR") is None
+    _console = _ConsoleHandler(live=ansi, color=color)
+    _console.setLevel(logging.DEBUG if debug else logging.INFO)
     _console.setFormatter(_TagFormatter("%(asctime)s %(tagbox)s %(cstart)s%(message)s%(cend)s", "%H:%M:%S", color=color))
     root.addHandler(_console)
 
