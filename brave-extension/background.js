@@ -300,7 +300,7 @@ async function onRefreshPage(tabId, url) {
     if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a username; no saved login (or it's blocked)" });
     await setRefresh({ userSent: true });
     const res = await runAgent(tabId, "fill", c.username, null);
-    report("refresh-submitted", { step: "username", submitted: !!(res && res.submitted), refused: !!(res && res.refused) });
+    report("refresh-submitted", { step: "username", submitted: !!(res && res.submitted), refused: !!(res && res.refused), form: res && res.form });
   }
   // Otherwise (redirect page, MFA prompt...) wait for the next page or the timeout.
 }
