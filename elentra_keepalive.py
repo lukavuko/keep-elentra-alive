@@ -39,7 +39,6 @@ import logging.handlers
 import os
 import random
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -130,20 +129,39 @@ _stop = False
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
-class _ColorFormatter(logging.Formatter):
-    COLORS = {
-        logging.DEBUG: "\033[2;37m",
-        logging.INFO: "\033[32m",
-        logging.WARNING: "\033[33m",
-        logging.ERROR: "\033[31m",
-        logging.CRITICAL: "\033[1;31m",
-    }
-    RESET = "\033[0m"
+_LEVEL_TAGS = {logging.DEBUG: "DEBUG", logging.INFO: "INFO", logging.WARNING: "WARN", logging.ERROR: "ERROR", logging.CRITICAL: "ERROR"}
+_TAG_COLORS = {
+    "DEBUG": "\033[2;37m",
+    "INFO": "\033[36m",
+    "OK": "\033[1;32m",
+    "LOGIN": "\033[35m",
+    "WARN": "\033[1;33m",
+    "ERROR": "\033[1;31m",
+}
+_RESET = "\033[0m"
+
+
+class _TagFormatter(logging.Formatter):
+    """Prefixes every line with a [TAG] box: INFO, OK (something succeeded),
+    LOGIN (a background re-login step), WARN, ERROR or DEBUG. A record can set
+    its own tag with extra={"tag": "OK"}; otherwise the level decides."""
+
+    def __init__(self, fmt: str, datefmt: str | None = None, color: bool = False) -> None:
+        super().__init__(fmt, datefmt)
+        self.color = color
 
     def format(self, record: logging.LogRecord) -> str:
-        text = super().format(record)
-        color = self.COLORS.get(record.levelno)
-        return f"{color}{text}{self.RESET}" if color else text
+        tag = getattr(record, "tag", None) or _LEVEL_TAGS.get(record.levelno, "INFO")
+        box = f"[{tag}]".ljust(7)
+        if self.color:
+            c = _TAG_COLORS.get(tag, "")
+            box = f"{c}{box}{_RESET}"
+        record.tagbox = box
+        # WARN/ERROR/DEBUG messages are coloured too, not just their tag.
+        tint = self.color and tag in ("WARN", "ERROR", "DEBUG")
+        record.cstart = _TAG_COLORS[tag] if tint else ""
+        record.cend = _RESET if tint else ""
+        return super().format(record)
 
 
 def _enable_windows_ansi() -> bool:
@@ -158,46 +176,44 @@ def _enable_windows_ansi() -> bool:
         return False
 
 
-_ANSI = re.compile(r"\033\[[0-9;]*[A-Za-z]")
-
-
 class _ConsoleHandler(logging.StreamHandler):
-    """In a real terminal, keeps one status line pinned below the log.
-
-    Lines logged with extra={"transient": True} (retries, re-login steps, the
-    latest ping) can be erased by clear_transient() once things succeed.
-    Everything else stays on screen. The log file always keeps every line."""
+    """In a real terminal: the startup notes stay at the top, a status line is
+    pinned at the bottom, and reset() wipes everything in between, so after a
+    successful ping only the latest state is on screen. The log file always
+    keeps every line."""
 
     def __init__(self, live: bool) -> None:
         super().__init__()
         self.live = live
         self._status = ""
-        self._transient_rows = 0  # screen rows of transient lines right above the status line
-
-    def _rows(self, text: str) -> int:
-        cols = max(20, shutil.get_terminal_size((100, 24)).columns)
-        return sum(max(1, -(-len(_ANSI.sub("", line)) // cols)) for line in text.split("\n"))
+        self._banner: list[str] = []  # formatted startup lines, redrawn after each reset
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "banner", False):
+            self._banner.append(self.format(record))
         if self._status:
             self.stream.write("\r\033[K")
         super().emit(record)
-        if getattr(record, "transient", False):
-            if self.live:
-                self._transient_rows += self._rows(self.format(record))
-        else:
-            self._transient_rows = 0  # anything above a lasting line stays put
         if self._status:
             self.stream.write(self._status)
             self.flush()
 
-    def clear_transient(self) -> None:
+    def end_banner(self) -> None:
         self.acquire()
         try:
-            if self.live and self._transient_rows:
-                self.stream.write(f"\r\033[K\033[{self._transient_rows}A\r\033[J{self._status}")
-                self.flush()
-            self._transient_rows = 0
+            self.stream.write("\n")
+            self.flush()
+        finally:
+            self.release()
+
+    def reset(self) -> None:
+        if not self.live:
+            return
+        self.acquire()
+        try:
+            screen = "\033[2J\033[3J\033[H" + "".join(line + "\n" for line in self._banner) + "\n"
+            self.stream.write(screen + self._status)
+            self.flush()
         finally:
             self.release()
 
@@ -225,10 +241,8 @@ def _setup_logging(log_dir: Path | None, debug: bool, keep_days: int = 14) -> Pa
     ansi = sys.stderr.isatty() and (os.name != "nt" or _enable_windows_ansi())
     _console = _ConsoleHandler(live=ansi)
     _console.setLevel(logging.DEBUG if debug else logging.INFO)
-    if ansi and os.environ.get("NO_COLOR") is None:
-        _console.setFormatter(_ColorFormatter("%(asctime)s  %(message)s", "%H:%M:%S"))
-    else:
-        _console.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(message)s", "%H:%M:%S"))
+    color = ansi and os.environ.get("NO_COLOR") is None
+    _console.setFormatter(_TagFormatter("%(asctime)s %(tagbox)s %(cstart)s%(message)s%(cend)s", "%H:%M:%S", color=color))
     root.addHandler(_console)
 
     if log_dir is None:
@@ -238,7 +252,7 @@ def _setup_logging(log_dir: Path | None, debug: bool, keep_days: int = 14) -> Pa
         path = log_dir / "keepalive.log"
         fh = logging.handlers.TimedRotatingFileHandler(path, when="midnight", backupCount=keep_days, encoding="utf-8")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(threadName)-15s %(message)s"))
+        fh.setFormatter(_TagFormatter("%(asctime)s %(tagbox)s %(threadName)-15s %(message)s"))
         root.addHandler(fh)
         return path
     except OSError as exc:
@@ -254,14 +268,24 @@ def _status(text: str) -> None:
         log.info(text)
 
 
-def _clear_transient() -> None:
+def _reset_console() -> None:
+    """Clear the console down to the startup notes."""
     if _console:
-        _console.clear_transient()
+        _console.reset()
 
 
-def tlog(level: int, msg: str, *args) -> None:
-    """A repeating/progress line: erased from the console once things succeed."""
-    log.log(level, msg, *args, extra={"transient": True})
+def banner(level: int, msg: str, *args) -> None:
+    """A startup note: stays at the top of the console through every reset."""
+    log.log(level, msg, *args, extra={"banner": True})
+
+
+def ok(msg: str, *args) -> None:
+    log.info(msg, *args, extra={"tag": "OK"})
+
+
+def step(level: int, msg: str, *args) -> None:
+    """One step of a background re-login."""
+    log.log(level, msg, *args, extra={"tag": "LOGIN"})
 
 
 def safe_url(url: str) -> str:
@@ -283,12 +307,12 @@ def _prevent_sleep() -> None:
     choosing Sleep still sleeps — the wake handling covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        log.info("Keeping this PC awake while running. Close this window when you're done.")
+        banner(logging.INFO, "Keeping this PC awake while running. Close this window when you're done.")
     elif sys.platform == "darwin":
         # caffeinate -w exits by itself when this process does.
         try:
             subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log.info("Keeping this Mac awake while running. Close this window when you're done.")
+            banner(logging.INFO, "Keeping this Mac awake while running. Close this window when you're done.")
         except OSError:
             log.debug("caffeinate not available; the Mac may idle-sleep.")
 
@@ -513,16 +537,16 @@ def _ago(seconds: float) -> str:
 
 # Re-login progress from the extension, shown in the console as it happens.
 EVENT_TEXT = {
-    "refresh-opened": (logging.INFO, "Re-login: opened Elentra in a background tab."),
-    "refresh-skipped": (logging.INFO, "Re-login: skipped (you have a CWL login page open)."),
-    "refresh-elentra-page": (logging.INFO, "Re-login: on an Elentra page."),
-    "refresh-cwl-page": (logging.INFO, "Re-login: reached the CWL login page."),
-    "refresh-other-page": (logging.WARNING, "Re-login: landed on an unexpected page."),
-    "refresh-returned": (logging.INFO, "Re-login: back on Elentra, checking the session."),
-    "refresh-timeout": (logging.WARNING, "Re-login: timed out."),
-    "refresh-closed": (logging.WARNING, "Re-login: the background tab was closed."),
-    "refresh-no-login": (logging.WARNING, "Re-login: CWL wants a login and none is saved."),
-    "refresh-agent-error": (logging.WARNING, "Re-login: the page script failed."),
+    "refresh-opened": (logging.INFO, "Opened Elentra in a background tab."),
+    "refresh-skipped": (logging.INFO, "Skipped (you have a CWL login page open)."),
+    "refresh-elentra-page": (logging.DEBUG, "On an Elentra page."),
+    "refresh-cwl-page": (logging.INFO, "Reached the CWL login page."),
+    "refresh-other-page": (logging.WARNING, "Landed on an unexpected page."),
+    "refresh-returned": (logging.INFO, "Back on Elentra, checking the session."),
+    "refresh-timeout": (logging.WARNING, "Timed out."),
+    "refresh-closed": (logging.WARNING, "The background tab was closed."),
+    "refresh-no-login": (logging.WARNING, "CWL wants a login and none is saved."),
+    "refresh-agent-error": (logging.WARNING, "The page script failed."),
 }
 
 REFRESH_RESULTS = {"refresh-returned", "refresh-timeout", "refresh-login-rejected", "refresh-skipped", "refresh-closed", "refresh-no-login"}
@@ -602,7 +626,7 @@ class _PushHandler(BaseHTTPRequestHandler):
         names = ", ".join(sorted({str(c.get("name", "?")) for c in cookies})) or "(none)"
         log.debug("Push (%s): %d cookie(s) [%s]%s", reason, len(cookies), names, " · CWL login page open" if login_busy else "")
         if reason == "resume":
-            tlog(logging.INFO, "Browser reports you're back — checking the session.")
+            log.debug("Browser reports you're back — checking the session.")
         elif reason == "resync":
             log.info("Resync requested from the extension.")
 
@@ -610,7 +634,7 @@ class _PushHandler(BaseHTTPRequestHandler):
         action = _store.take_action()
         if action:
             reply["action"] = action
-            tlog(logging.INFO, "Re-login: asked the extension (in reply to its POST /cookies) to open %s in a background tab.", safe_url(action.get("url", "")))
+            step(logging.INFO, "Asked the extension to open %s in a background tab.", safe_url(action.get("url", "")))
         self._send(200, reply)
 
     def _event(self, payload: dict) -> None:
@@ -625,21 +649,21 @@ class _PushHandler(BaseHTTPRequestHandler):
             line = f"{str(detail.get('method', '?'))[:8]} {str(detail.get('url', '?'))[:120]} -> {str(detail.get('status', '?'))[:40]}"
             if detail.get("redirect"):
                 line += f" -> redirect to {str(detail['redirect'])[:120]}"
-            tlog(logging.INFO, "Re-login:   %s", line)
+            step(logging.INFO, "  %s", line)
         elif name == "refresh-submitted":
-            step = str(detail.get("step", "?"))[:10]
+            which = str(detail.get("step", "?"))[:10]
             if detail.get("refused"):
-                tlog(logging.WARNING, "Re-login: refused to fill the %s (not CWL's own form).", step)
+                step(logging.WARNING, "Refused to fill the %s (not CWL's own form).", which)
             else:
-                tlog(logging.INFO, "Re-login: filled and submitted the %s (form: %s).", step, str(detail.get("form", "?"))[:120])
+                step(logging.INFO, "Filled and submitted the %s (form: %s).", which, str(detail.get("form", "?"))[:120])
         elif name in EVENT_TEXT:
             level, msg = EVENT_TEXT[name]
             extra = detail.get("url") or detail.get("why") or detail.get("error") or ""
-            tlog(level, "%s%s", msg, f" ({str(extra)[:120]})" if extra else "")
+            step(level, "%s%s", msg, f" ({str(extra)[:120]})" if extra else "")
         if name == "refresh-login-rejected":
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             LOGIN_BLOCK_PATH.touch()
-            log.error("CWL rejected the saved login. Autofill is off until you run --set-login again.")
+            step(logging.ERROR, "CWL rejected the saved login. Autofill is off until you run --set-login again.")
         if name in REFRESH_RESULTS:
             _store.refresh_finished(name)
         self._send(200, {"ok": True})
@@ -647,10 +671,10 @@ class _PushHandler(BaseHTTPRequestHandler):
     def _credentials(self) -> None:
         creds = _store.take_credentials()
         if creds is None:
-            tlog(logging.INFO, "Re-login: POST 127.0.0.1/credentials -> 404 (no saved login, blocked, or no attempt running).")
+            step(logging.INFO, "  POST 127.0.0.1/credentials -> 404 (no saved login available)")
             self._send(404, {})
             return
-        tlog(logging.INFO, "Re-login: POST 127.0.0.1/credentials -> 200 (saved login handed to the re-login tab).")
+        step(logging.INFO, "  POST 127.0.0.1/credentials -> 200 (saved login handed to the re-login tab)")
         self._send(200, {"username": creds[0], "password": creds[1]})
 
     def log_message(self, fmt, *args):
@@ -667,7 +691,7 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
             "--listen-port NNNN (and update PORT in brave-extension/background.js to match)."
         )
     threading.Thread(target=server.serve_forever, name="listener", daemon=True).start()
-    log.info("Listening for the browser extension's cookie pushes on %s:%d.", host, port)
+    banner(logging.INFO, "Listening for the browser extension's cookie pushes on %s:%d.", host, port)
     return server
 
 
@@ -736,9 +760,6 @@ def check_session(session: requests.Session, url: str) -> tuple[str, list[str]]:
     if resp.status_code in (401, 403):
         return "dead", trail
     body = resp.text[:20000].lower()
-    title = re.search(r"<title[^>]*>(.*?)</title>", body, re.S)
-    if title:
-        trail.append(f"title={title.group(1).strip()[:60]!r}")
     if "samlrequest" in body or 'name="j_username"' in body:
         trail.append("login form in page")
         return "dead", trail
@@ -777,20 +798,23 @@ def run_auto_loop(args) -> int:
 
     creds = saved_login()
     if creds and not login_blocked():
-        log.warning(
+        banner(
+            logging.WARNING,
             "Saved CWL login found for '%s', stored in %s. Background re-login will fill it in "
             "after sleep. To remove it: python elentra_keepalive.py --forget-login",
             creds[0], keychain_name(),
         )
     elif creds:
-        log.warning("Saved CWL login was rejected last time, so autofill is off. Save it again with the save-login launcher.")
+        banner(logging.WARNING, "Saved CWL login was rejected last time, so autofill is off. Save it again with the save-login launcher.")
     else:
-        log.info("No CWL login saved. If CWL asks for your password after sleep, you'll log in yourself (optional: save one with the save-login launcher).")
+        banner(logging.INFO, "No CWL login saved. If CWL asks for your password after sleep, you'll log in yourself (optional: save one with the save-login launcher).")
 
     session = make_session()
     _prevent_sleep()
-    log.info("Ctrl+C to stop (can take up to ~%ds if a ping is in flight; press again to force quit).", TIMEOUT)
-    log.info("Watching for a logged-in Elentra session. Log in to Elentra in Brave/Chrome if you aren't already.")
+    banner(logging.INFO, "Ctrl+C to stop (can take up to ~%ds if a ping is in flight; press again to force quit).", TIMEOUT)
+    banner(logging.INFO, "Watching for a logged-in Elentra session. Log in to Elentra in Brave/Chrome if you aren't already.")
+    if _console:
+        _console.end_banner()
 
     state = ""  # "", "alive" or "waiting"
     errors = 0
@@ -803,11 +827,22 @@ def run_auto_loop(args) -> int:
     alive_since = 0.0  # wall clock, start of the current logged-in stretch
     pings_ok = 0
 
-    def note(level: int, msg: str, transient: bool = False) -> None:
+    carry: list[tuple[str, str]] = []  # (tag, text) shown again right after the next console reset
+
+    def note(level: int, msg: str, tag: str | None = None) -> None:
         nonlocal last_note
         if msg != last_note:
-            log.log(level, msg, extra={"transient": transient})
+            log.log(level, msg, extra={"tag": tag} if tag else None)
             last_note = msg
+
+    def fresh_screen() -> None:
+        """Wipe the console down to the startup notes, then repeat what just happened."""
+        _reset_console()
+        for tag, text in carry:
+            # console only (these lines are already in the log file), and only if the reset wiped them
+            if _console and _console.live:
+                _console.handle(log.makeRecord(log.name, logging.INFO, "", 0, text, None, None, extra={"tag": tag}))
+        carry.clear()
 
     def new_spell(why: str) -> None:
         nonlocal attempts, attempt_open, dead_sig, force
@@ -820,7 +855,7 @@ def run_auto_loop(args) -> int:
         result = _store.take_refresh_result()
         if result:
             attempt_open = False
-            tlog(logging.INFO, "Re-login attempt %d ended: %s", len(attempts), result)
+            log.debug("Re-login attempt %d ended: %s", len(attempts), result)
             if result == "refresh-skipped" and attempts:
                 attempts.pop()  # user was logging in themselves; doesn't count
 
@@ -832,7 +867,7 @@ def run_auto_loop(args) -> int:
         due = force or state != "waiting" or sig != dead_sig or time.monotonic() - last_check >= WAITING_RECHECK
         if SESSION_COOKIE in flat and due:
             if _store.login_busy() and state == "waiting" and not force:
-                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", transient=True)
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", tag="LOGIN")
                 _store.wait(ACQUIRE_WAIT)
                 continue
             force = False
@@ -850,24 +885,30 @@ def run_auto_loop(args) -> int:
                 errors += 1
                 delay = min(30 * errors, 300)
                 if errors == 1:
-                    tlog(logging.WARNING, "Can't reach Elentra (%s) — retrying.", " | ".join(trail))
+                    log.warning("Can't reach Elentra (%s) — retrying.", " | ".join(trail))
                 else:
                     _status(f"Can't reach Elentra — {errors} failed attempts, retrying in {delay}s")
                 if _store.wait(delay) == "resume":
-                    log.info("Computer woke up after ~%s asleep.", _ago(_store.slept_for))
+                    msg = f"Computer woke up after ~{_ago(_store.slept_for)} asleep."
+                    log.info(msg)
+                    carry.append(("INFO", msg))
                     new_spell("woke from sleep")
                 continue
             if errors:
-                _clear_transient()
-                log.info("Connection to Elentra restored after %d failed attempt(s).", errors)
+                msg = f"Connection to Elentra restored after {errors} failed attempt(s)."
+                ok(msg)
+                carry.append(("OK", msg))
                 errors = 0
         elif SESSION_COOKIE not in flat:
             force = False
 
         if verdict == "alive":
             if state != "alive":
-                _clear_transient()
-                log.info("Logged in to Elentra — keepalive active, pinging every ~%d min.", round(args.interval / 60))
+                msg = f"Logged in to Elentra — keepalive active, pinging every ~{round(args.interval / 60)} min."
+                if attempts:
+                    msg += f" (background re-login succeeded on attempt {len(attempts)})"
+                ok(msg)
+                carry.append(("OK", msg))
                 state = _store.state = "alive"
                 last_note = ""
                 alive_since, pings_ok = time.time(), 0
@@ -877,18 +918,20 @@ def run_auto_loop(args) -> int:
             delay = next_delay(args.interval)
             nxt = time.strftime("%H:%M", time.localtime(time.time() + delay))
             up = _ago(time.time() - alive_since)
-            _clear_transient()  # the previous ping line
-            tlog(logging.INFO, "Ping OK: %s (%.1f s) · logged in for %s · next ~%s", " | ".join(trail), ping_ms / 1000, up, nxt)
-            _status(f"Session alive · {pings_ok} ping(s) over {up} · next ~{nxt}")
+            _status("")
+            fresh_screen()
+            ok("Ping OK (%.1f s) · logged in for %s · next ping ~%s", ping_ms / 1000, up, nxt)
             if _store.wait(delay) == "resume":
-                log.info("Computer woke up after ~%s asleep — checking the session now.", _ago(_store.slept_for))
+                msg = f"Computer woke up after ~{_ago(_store.slept_for)} asleep — checking the session now."
+                log.info(msg)
+                carry.append(("INFO", msg))
                 force = True
             continue
 
         if verdict == "dead":
             dead_sig = sig
             args.cookie_file.unlink(missing_ok=True)
-            note(logging.INFO, f"Ping: not logged in. {' | '.join(trail)}", transient=True)
+            note(logging.INFO, f"Ping: not logged in ({' | '.join(trail)}).")
 
         if state == "alive":
             _status("")
@@ -907,24 +950,32 @@ def run_auto_loop(args) -> int:
             maybe_refresh = objs or saved_login()
             if attempt_open and time.monotonic() - attempts[-1] > REFRESH_WINDOW:
                 attempt_open = False
-                tlog(logging.WARNING, "Re-login attempt %d: no result from the extension in time.", len(attempts))
+                step(logging.WARNING, "Attempt %d: no result from the extension in time.", len(attempts))
             if not maybe_refresh:
                 note(logging.WARNING, "Waiting for you to log in to Elentra.")
             elif _store.login_busy():
-                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", transient=True)
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", tag="LOGIN")
             elif not attempt_open and len(attempts) < len(REFRESH_BACKOFF):
                 since = time.monotonic() - attempts[-1] if attempts else float("inf")
                 if since >= REFRESH_BACKOFF[len(attempts)]:
                     attempts.append(time.monotonic())
                     attempt_open = True
                     _store.request_refresh(args.login_url)
-                    note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", transient=True)
+                    note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", tag="LOGIN")
             elif not attempt_open:
                 hint = "" if saved_login() else " (Tip: save your CWL login with the save-login launcher.)"
-                note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra manually.{hint}")
+                msg = f"Background re-login didn't work after {len(attempts)} attempts — please log in to Elentra manually.{hint}"
+                if msg != last_note:
+                    # attempts are done: clear their steps off the console (the log file keeps them)
+                    _reset_console()
+                    log.warning(msg)
+                    log.info("Details of each attempt are in the log file.")
+                    last_note = msg
 
         if _store.wait(ACQUIRE_WAIT) == "resume":
-            log.info("Computer woke up after ~%s asleep.", _ago(_store.slept_for))
+            msg = f"Computer woke up after ~{_ago(_store.slept_for)} asleep."
+            log.info(msg)
+            carry.append(("INFO", msg))
             new_spell("woke from sleep")
 
     server.shutdown()
@@ -960,10 +1011,10 @@ def main() -> int:
             ap.error(f"--{name.replace('_', '-')} must start with {BASE}/")
 
     log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug, max(0, args.log_days))
-    log.info("Starting Elentra keepalive...")
+    banner(logging.INFO, "Starting Elentra keepalive...")
     if log_path:
         kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
-        log.info("Detailed log: %s (keeping %s)", log_path.parent, kept)
+        banner(logging.INFO, "Detailed log: %s (keeping %s)", log_path.parent, kept)
     log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)

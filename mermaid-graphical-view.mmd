@@ -28,6 +28,7 @@ config:
     subGraphTitleMargin:
       top: 12
       bottom: 18
+updated: 2026-11-03 01:01:51
 ---
 flowchart TD
     %% Icons are Font Awesome (fa:fa-...). Mermaid Live / Mermaid Chart show them;
@@ -38,12 +39,12 @@ flowchart TD
         S1("fa:fa-puzzle-piece <b>Install the browser extension<br/>(Brave or Chrome)")
         S2("fa:fa-key <b>OPTIONAL</b> fa:fa-key\n run the save-login launcher.<br/>CWL login can be stored encrypted<br/>in Windows Credential Manager<br/>or the macOS Keychain.")
     end
-
+    
     %% ---------- 2. Starting ----------
     Start(["fa:fa-play <b>Starting</b>: Double-click the \n run-keepalive launcher"])
     Start ==> Prep("fa:fa-terminal Shows the startup notes:<br/>log folder, saved login,<br/>keeping the computer awake,<br/>how to stop")
     %% Start --> Busy
-
+    
     %% ---------- 3. Browser ----------
     subgraph Browser["2 · Your browser"]
         B0("fa:fa-user Log in to Elentra as usual")
@@ -52,10 +53,10 @@ flowchart TD
         B3("fa:fa-info-circle Toolbar badge:<br/>😎&nbsp;=&nbsp;logged&nbsp;in<br/>🫠&nbsp;=&nbsp;awaiting&nbsp;login<br/>💀&nbsp;=&nbsp;not&nbsp;running")
         B0 --> B1 --> B2
     end
-
+    
     B2 ==>|"sent to 127.0.0.1"| Have
     Prep ==> Have
-
+    
     %% ---------- 4. Main loop ----------
     subgraph Loop["3 · The script's routine"]
         Have{"Has the extension<br/>sent a cookie?"}
@@ -67,13 +68,13 @@ flowchart TD
         Res ==>Dead("fa:fa-sign-out-alt Logged out")
         Wake("fa:fa-sun Computer just woke up:<br/>check right away")
     end
-
+    
     Dead ==> Busy
     Wake -.-> Ping
-
+    
     %% ---------- 5. Background re-login ----------
     subgraph Relogin["4 · The Auto login system"]
-        Busy{"Check: is the CWL<br/> login page is open?"}
+        Busy{"Check: is the CWL<br/> login page open?"}
         Busy -->|"Yes"| LetYou("fa:fa-user-clock Waits until you finish,<br/>then back to routine ↻")
         Busy -->|"No"| Attempts{"Have we exhausted any <br/>previous login attempts?"}
         Attempts -.->|"Yes"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
@@ -85,17 +86,18 @@ flowchart TD
         Saved -->|"No"| Ask
         Fill -->|"Success"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine carries on.")
         Fill -->|"Failure"| Ask
-
+    
         Signed -->Back
         Tab ~~~ Fill
     end
 
-    
+
+​    
     Setup ~~~ Browser 
     Start ~~~ B1
     
     S1 ==> B0
-
+    
     %% ---------- Styling: solid fills + white text for decisions and outcomes, outlined boxes for steps ----------
     classDef step fill:#ffffff,stroke:#607d8b,stroke-width:1.5px,color:#1b1f24
     classDef decide fill:#2962FF,stroke:#2962FF,color:#ffffff,font-weight:bold
@@ -103,14 +105,14 @@ flowchart TD
     classDef bad fill:#C62828,stroke:#C62828,color:#ffffff,font-weight:bold
     classDef warn fill:#FFB300,stroke:#FFB300,color:#1b1f24,font-weight:bold
     classDef start fill:#AA00FF,stroke:#AA00FF,color:#ffffff,font-weight:bold
-
+    
     class S1,S2,Prep,B0,B1,B2,B3,NoExt,Ping,Err,Wake,LetYou,Tab,Fill step
     class Have,Res,Busy,Attempts,Signed,Saved decide
     class Alive,Back good
     class Dead bad
     class Ask warn
     class Start start
-
+    
     style Setup fill:#eef3fb,stroke:#5b7db1,stroke-width:2px,color:#1a3a6b
     style Browser fill:#f4ecfb,stroke:#8a5bb1,stroke-width:2px,color:#4a2470
     style Loop fill:#eef8ee,stroke:#4a9a4a,stroke-width:2px,color:#1d4d1d
