@@ -27,9 +27,9 @@ const LOGIN_BUSY_MS = 2 * 60 * 1000; // a CWL page navigated this recently = you
 const REFRESH_TIMEOUT_MIN = 1.5;
 
 const BADGES = {
-  alive: ["ON", "#2e7d32", "Elentra keepalive: session alive (click to resync)"],
-  waiting: ["…", "#f9a825", "Elentra keepalive: running, waiting for a live Elentra session (click to resync)"],
-  off: ["OFF", "#757575", "Elentra keepalive: script not running"],
+  alive: ["😎", "#2e7d32", "Elentra keepalive: session alive (click to resync)"],
+  waiting: ["🫠", "#f9a825", "Elentra keepalive: running, waiting for a live Elentra session (click to resync)"],
+  off: ["💀", "#757575", "Elentra keepalive: script not running"],
 };
 
 function setBadge(state) {
@@ -66,7 +66,7 @@ async function gather() {
   let list = [];
   try {
     list = await chrome.cookies.getAll({ domain: ELENTRA_HOST });
-  } catch (e) {}
+  } catch (e) { }
   return list
     .filter((c) => isElentra(c.domain))
     .map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly }));
@@ -82,7 +82,7 @@ async function post(path, body) {
 }
 
 function report(event, detail = {}) {
-  return post("/event", { event, detail }).catch(() => {});
+  return post("/event", { event, detail }).catch(() => { });
 }
 
 // --- You logging in yourself ---------------------------------------------- //
@@ -165,7 +165,7 @@ async function finishRefresh(result, detail = {}, close = true) {
   creds = null;
   await chrome.storage.session.remove("refresh");
   chrome.alarms.clear("refresh-timeout");
-  if (close) chrome.tabs.remove(r.tabId).catch(() => {});
+  if (close) chrome.tabs.remove(r.tabId).catch(() => { });
   await report(result, { last: r.last, sawIdp: r.sawIdp, ...detail });
   push("refresh-done");
 }
@@ -175,7 +175,7 @@ async function fetchCreds() {
   try {
     const c = await post("/credentials", {});
     if (c && c.username && c.password) creds = c;
-  } catch (e) {}
+  } catch (e) { }
   return creds;
 }
 

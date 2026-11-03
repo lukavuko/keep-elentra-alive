@@ -2,6 +2,14 @@
 
 Tired of being logged out of Elentra mid-lecture? This keeps you logged in.
 
+> [!TIP]
+> **Already set up? To start:**
+> 1. Double-click `run-keepalive-for-Windows.bat` (or `run-keepalive-for-macOS.command`) and leave the window open.
+> 2. Log in to Elentra in Brave/Chrome. The extension badge turns 😎 when you're kept alive.
+> 3. Logged out after sleep? With a saved login it signs you back in by itself. Without one, just log in again.
+>
+> Stuck? 💀 means the script isn't running, and 🫠 means it's waiting for you to log in.
+
 ## ✨ What it does
 
 While you're online and your laptop is awake, it stops your Elentra session from

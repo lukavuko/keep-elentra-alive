@@ -921,7 +921,7 @@ def run_auto_loop(args) -> int:
                     note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", transient=True)
             elif not attempt_open:
                 hint = "" if saved_login() else " (Tip: save your CWL login with the save-login launcher.)"
-                note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra in the browser.{hint}")
+                note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra manually.{hint}")
 
         if _store.wait(ACQUIRE_WAIT) == "resume":
             log.info("Computer woke up after ~%s asleep.", _ago(_store.slept_for))

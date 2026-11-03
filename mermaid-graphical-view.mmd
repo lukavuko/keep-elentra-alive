@@ -20,7 +20,7 @@ config:
     .edgeLabel, .edgeLabel p { font-style: italic; }
   flowchart:
     htmlLabels: true
-    wrappingWidth: 240
+    wrappingWidth: 320
     padding: 18
     nodeSpacing: 45
     rankSpacing: 60
@@ -34,69 +34,59 @@ flowchart TD
 
     %% ---------- 1. One-time setup ----------
     subgraph Setup["1 · One-time setup"]
-        S1("fa:fa-puzzle-piece Install the browser extension<br/>(Brave or Chrome)")
-        S2("fa:fa-key Optional: run the save-login launcher.<br/>Your CWL login is stored encrypted<br/>in Windows Credential Manager<br/>or the macOS Keychain.")
+        S1("fa:fa-puzzle-piece <b>Install the browser extension<br/>(Brave or Chrome)")
+        S2("fa:fa-key <b>OPTIONAL</b> fa:fa-key\n run the save-login launcher.<br/>CWL login can be stored encrypted<br/>in Windows Credential Manager<br/>or the macOS Keychain.")
     end
 
     %% ---------- 2. Starting ----------
-    Start(["fa:fa-play 2 · Double-click the run-keepalive launcher"])
-    Start --> Prep("fa:fa-terminal Shows the startup notes:<br/>log folder, saved login,<br/>keeping the computer awake,<br/>how to stop")
+    Start(["fa:fa-play <b>Starting</b>: Double-click the \n run-keepalive launcher"])
+    Start ==> Prep("fa:fa-terminal Shows the startup notes:<br/>log folder, saved login,<br/>keeping the computer awake,<br/>how to stop")
+    %% Start --> Busy
 
     %% ---------- 3. Browser ----------
-    subgraph Browser["3 · Your browser"]
-        B0("fa:fa-user You log in to Elentra as usual")
-        B1("fa:fa-sync The extension checks in:<br/>when your login changes,<br/>every minute, on wake-up,<br/>on browser start, or on icon click")
-        B2("fa:fa-cookie-bite Sends only the Elentra<br/>session cookie to the script<br/>(never your password)")
-        B3("fa:fa-info-circle Toolbar badge:<br/>ON = logged in<br/>... = waiting for a login<br/>OFF = script not running")
+    subgraph Browser["2 · Your browser"]
+        B0("fa:fa-user Log in to Elentra as usual")
+        B1("fa:fa-sync The extension will check </br> your login state")
+        B2("fa:fa-cookie-bite Sends the temporary Elentra<br/>session cookie to the script")
+        B3("fa:fa-info-circle Toolbar badge:<br/>😎 = logged in<br/>🫠 = awaiting login"<br/>💀 = not running)
         B0 --> B1 --> B2
     end
 
-    B2 -->|"sent to 127.0.0.1"| Have
-    Prep --> Have
+    B2 ==>|"sent to 127.0.0.1"| Have
+    Prep ==> Have
 
     %% ---------- 4. Main loop ----------
-    subgraph Loop["4 · The script's routine (repeats until closed)"]
+    subgraph Loop["3 · The script's routine"]
         Have{"Has the extension<br/>sent a cookie?"}
         Have -->|"Not yet"| NoExt("fa:fa-clock Shows: Waiting for you<br/>to log in. Checks again<br/>when a cookie arrives.")
-        Have -->|"Yes"| Ping("fa:fa-heartbeat Opens the Elentra dashboard<br/>with your cookie")
+        Have ==>|"Yes"| Ping("fa:fa-heartbeat Opens the Elentra dashboard<br/>with your cookie")
         Ping --> Res{"What did<br/>Elentra say?"}
-        Res -->|"Page loaded"| Alive("fa:fa-check-circle Still logged in.<br/>Pings again in<br/>about 15 minutes.")
-        Res -->|"No answer"| Err("fa:fa-wifi Pings again in 30 s,<br/>waiting longer each time<br/>(at most 5 min)")
-        Res -->|"Sent to login"| Dead("fa:fa-sign-out-alt Logged out<br/>(usually after sleep)")
+        Res <-->|"No answer"| Err("fa:fa-wifi Try again in 30 seconds")
+        Res ==>Alive("fa:fa-check-circle Logged in<br/>Ping again in ~15 min")
+        Res ==>Dead("fa:fa-sign-out-alt Logged out")
         Wake("fa:fa-sun Computer just woke up:<br/>check right away")
     end
 
+    Dead ==> Busy
     Wake -.-> Ping
 
     %% ---------- 5. Background re-login ----------
-    subgraph Relogin["5 · Automatic re-login in a background tab"]
-        Busy{"Are you on the<br/>CWL login page<br/>yourself?"}
-        Busy -->|"Yes"| LetYou("fa:fa-user-clock Waits until you finish,<br/>then back to step 4")
-        Busy -->|"No"| Tries{"Tries left?<br/>(now, +2 min, +5 min)"}
-        Tries -->|"No"| Ask("fa:fa-hand-paper Asks you to log in<br/>in the browser")
-        Tries -->|"Yes"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
-        Tab --> Page{"What loads<br/>in the tab?"}
-        Page -->|"Elentra, signed in"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine (step 4)<br/>carries on.")
-        Page -->|"Elentra sign-in page"| Click("fa:fa-mouse-pointer Clicks the<br/>CWL login button")
-        Page -->|"CWL login form"| Saved{"Login saved<br/>in step 1?"}
-        Click -->|"CWL login form"| Saved
+    subgraph Relogin["4 · Re-login"]
+        Busy{"Check if the CWL<br/> login page is open"}
+        Busy -->|"Yes"| LetYou("fa:fa-user-clock Waits until you finish,<br/>then back to routine ↻")
+        Busy -->|"No"| Attempts{"Have we exhausted any </br>previous login attempts?"}
+        Attempts -.->|"<b>Yes</b>"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
+        Attempts -->|"<b>No</b>"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
+        Tab -->  Saved{"Is your login saved<br/> locally?"}
+        Saved -->|"Yes"| Fill("fa:fa-keyboard Fills in and submits<br/>the CWL login form<br/>automatically")
         Saved -->|"No"| Ask
-        Saved -->|"Yes"| Fill("fa:fa-keyboard Fills it in and submits,<br/>only on the real<br/>UBC login site")
-        Fill --> After{"What happens<br/>next?"}
-        After -->|"Lands on Elentra"| Back
-        After -->|"Login form again"| Wrong("fa:fa-lock Login rejected.<br/>Stops so CWL can't lock<br/>your account; autofill off<br/>until you save it again.")
-        After -->|"Nothing for 90 s<br/>(e.g. MFA)"| Timeout("fa:fa-hourglass-end Gives up this try and<br/>closes the tab. Next try<br/>after 2, then 5 min.")
-        Wrong --> Ask
+        Fill ==>|"Success"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine carries on.")
+        Fill ==>|"Failure"| Ask
     end
 
-    Dead --> Busy
-
-    %% ---------- Logs ----------
-    Logs[("fa:fa-file-alt Daily log file: every ping and<br/>every re-login request with its<br/>response (kept 14 days by default)")]
-    Relogin ~~~ Logs
-
+    
     Setup ~~~ Start
-    S1 -.-> B0
+    S1 ==> B0
 
     %% ---------- Styling: solid fills + white text for decisions and outcomes, outlined boxes for steps ----------
     classDef step fill:#ffffff,stroke:#607d8b,stroke-width:1.5px,color:#1b1f24
@@ -105,15 +95,13 @@ flowchart TD
     classDef bad fill:#C62828,stroke:#C62828,color:#ffffff,font-weight:bold
     classDef warn fill:#FFB300,stroke:#FFB300,color:#1b1f24,font-weight:bold
     classDef start fill:#AA00FF,stroke:#AA00FF,color:#ffffff,font-weight:bold
-    classDef log fill:#37474F,stroke:#37474F,color:#ffffff
 
-    class S1,S2,Prep,B0,B1,B2,B3,NoExt,Ping,Err,Wake,LetYou,Tab,Click,Fill,Timeout step
-    class Have,Res,Busy,Tries,Page,Saved,After decide
+    class S1,S2,Prep,B0,B1,B2,B3,NoExt,Ping,Err,Wake,LetYou,Tab,Fill step
+    class Have,Res,Busy,Attempts,Signed,Saved decide
     class Alive,Back good
-    class Dead,Wrong bad
+    class Dead bad
     class Ask warn
     class Start start
-    class Logs log
 
     style Setup fill:#eef3fb,stroke:#5b7db1,stroke-width:2px,color:#1a3a6b
     style Browser fill:#f4ecfb,stroke:#8a5bb1,stroke-width:2px,color:#4a2470
