@@ -74,7 +74,7 @@ flowchart TD
     subgraph Relogin["4 · Re-login"]
         Busy{"Check if the CWL<br/> login page is open"}
         Busy -->|"Yes"| LetYou("fa:fa-user-clock Waits until you finish,<br/>then back to routine ↻")
-        Busy -->|"No"| Attempts{"Have we exhausted any </br>previous login attempts?"}
+        Busy -->|"No"| Attempts{"Have we exhausted any <br/>previous login attempts?"}
         Attempts -.->|"<b>Yes</b>"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
         Attempts -->|"<b>No</b>"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
         Tab -->  Saved{"Is your login saved<br/> locally?"}
