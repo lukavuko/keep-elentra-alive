@@ -968,7 +968,7 @@ def run_auto_loop(args) -> int:
                 msg = f"Background re-login didn't work after {len(attempts)} attempts — please log in to Elentra manually.{hint}"
                 if msg != last_note:
                     # attempts are done: clear their steps off the console (the log file keeps them)
-                    _reset_console()
+                    fresh_screen()
                     log.warning(msg)
                     log.info("Details of each attempt are in the log file.")
                     last_note = msg
