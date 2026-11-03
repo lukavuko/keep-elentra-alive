@@ -1069,6 +1069,12 @@ def run_auto_loop(args) -> int:
                     log.warning(msg)
                     log.info("Details of each attempt are in the log file.")
                     last_note = msg
+            if attempt_open:
+                _set_title("🔄 Elentra · logging you back in…")
+            elif _store.login_busy():
+                _set_title("🫠 Elentra · finishing your login…")
+            else:
+                _set_title("🫠 Elentra · please log in")
 
         if _store.wait(ACQUIRE_WAIT) == "resume":
             msg = f"Computer woke up after ~{_ago(_store.slept_for)} asleep."
