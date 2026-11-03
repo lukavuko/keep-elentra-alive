@@ -1,92 +1,89 @@
 ---
+title: How Elentra Keepalive keeps you logged in
 references:
   - "File: /elentra_keepalive.py"
-generationTime: 2026-09-01T04:02:07.763Z
+  - "File: /brave-extension/background.js"
+generationTime: 2026-11-03T06:50:00.000Z
 ---
 flowchart TD
-    A["main()"] --> B["_setup_logging(args.log_file)"]
-    B --> C["Register SIGINT/SIGTERM handlers"]
-    C --> D["run_auto_loop(args)"]
-
-    D --> E["start_listener(host, port)"]
-    E --> F["ThreadingHTTPServer.serve_forever()"]
-
-    D --> G{"args.cookie_file exists?"}
-    G -->|Yes| H["load_cookie_objects(path)"]
-    H --> I["_store.set(seed)"]
-    I --> J["log.info - Warm-started"]
-    G -->|No| K["Skip warm start"]
-
-    D --> L["make_session()"]
-    L --> M["_prevent_sleep()"]
-
-    M --> N["state = \"\" (just started)"]
-    N --> O["while not _stop"]
-
-    O --> P{"SESSION_COOKIE in cookies?"}
-    P -->|"No"| NA["not alive"]
-
-    P -->|"Yes"| R["session.cookies = build_jar(objs)"]
-    R --> S["resp = session.get(args.url, allow_redirects=True)"]
-    S --> T{"RequestException?"}
-    T -->|"Yes"| U["errors += 1; log first, then status line"]
-    U --> V["wait(min(30 * errors, 300))"]
-    V --> O
-
-    T -->|"No"| W{"session_is_alive(resp)?"}
-    W -->|"No"| NA
-    NA --> X{"which case?"}
-    X -->|"no push yet"| X1["note: waiting for extension"]
-    X -->|"no cookies"| X2["note: waiting for login"]
-    X -->|"cookies, no refresh yet"| X3["_store.request_refresh(login_url)"]
-    X -->|"refresh > REFRESH_WINDOW ago"| X4["note: silent re-login failed"]
-    X1 --> Y["wait(ACQUIRE_INTERVAL)"]
-    X2 --> Y
-    X3 --> Y
-    X4 --> Y
-    Y --> O
-
-    W -->|"Yes"| Z["first time: clear screen, log logged in; state = \"alive\""]
-    Z --> AA["persist(objs, cookie_file); _status(last/next ping)"]
-    AA --> AB["_store.wait(next_delay(interval))"]
-    AB --> O
-
-    subgraph Extension["Browser extension: background.js (MV3 service worker)"]
-        EX1["chrome.cookies.onChanged / alarms 'push' (1 min) / onInstalled / onStartup"]
-        EX2["gather() - chrome.cookies.getAll for ubc.elentra.cloud, authentication.ubc.ca"]
-        EX3["push(reason) - fetch POST http://127.0.0.1:8765/cookies\n{token, reason, cookies}"]
+    %% ---------- One-time setup ----------
+    subgraph Setup["① One-time setup"]
+        S1["Install the browser extension<br/>(Brave / Chrome)"]
+        S2["Optional: run the <b>save-login</b> launcher<br/>Your CWL login is stored in the computer's<br/>secure password vault (Windows Credential Manager / macOS Keychain)"]
     end
 
-    EX1 --> EX2 --> EX3 --> EX4 --> EX5
+    %% ---------- Starting ----------
+    Start(["② Double-click the <b>run-keepalive</b> launcher"])
+    Start --> Prep["Stops the computer from dozing off on its own<br/>and opens a private 'mailbox' that only<br/>this computer can talk to"]
 
-    subgraph Listener["Listener thread"]
-        F1["_PushHandler.do_POST()"]
-        F2{"Origin valid and path == /cookies?"}
-        F3{"PUSH_TOKEN valid?"}
-        F4{"cookies is list of dicts?"}
-        F5["_store.set(cookies)"]
-        F6["HTTP 200 JSON {state, action?} - take_action() is one-shot"]
+    %% ---------- Browser side ----------
+    subgraph Browser["③ Your browser"]
+        B0["You log in to Elentra as usual"]
+        B1["The extension checks in with the script:<br/>• whenever your Elentra login changes<br/>• every minute<br/>• when the computer wakes up<br/>• when the browser starts<br/>• when you click its icon"]
+        B2["Hands over <b>only</b> the Elentra login cookie<br/>(the 'you're signed in' ticket)<br/>— never your password"]
+        B3["Toolbar badge shows the status:<br/>🟢 ON = logged in<br/>🟡 … = waiting for a login<br/>⚪ OFF = script not running"]
+        B0 --> B1 --> B2
     end
 
-    EX3 -->|"HTTP POST"| F1
-    F --> F1
-    F1 --> F2
-    F2 -->|"Yes"| F3
-    F3 -->|"Yes"| F4
-    F4 -->|"Yes"| F5
-    F5 --> F6
+    B2 -->|"delivered to the mailbox"| Have
+    Prep --> Have
 
-    F5 --> C1["CookieStore.set(cookies)"]
-    C1 --> C2{"cookies changed?"}
-    C2 -->|"Yes"| C3["_event.set()"]
-    C2 -->|"No"| C4["No wake signal"]
+    %% ---------- Main loop ----------
+    subgraph Loop["④ The script's routine (repeats until you close it)"]
+        Have{"Has the extension<br/>sent a login ticket?"}
+        Have -->|"Not yet"| NoExt["Shows: 'Waiting for you to log in'<br/>(or 'is the extension enabled?')"]
+        Have -->|"Yes"| Ping["Quietly opens the Elentra dashboard<br/>using your ticket — just like a click would"]
+        Ping --> Res{"What did Elentra say?"}
+        Res -->|"Page loaded"| Alive["✅ Still logged in<br/>Waits ~15 minutes (plus a random few minutes)<br/>then checks again"]
+        Res -->|"No answer<br/>(Wi-Fi down / Elentra busy)"| Err["Tries again in 30 s, then waits<br/>a little longer each time (max 5 min)"]
+        Res -->|"Sent to the login page"| Dead["❌ Logged out<br/>(usually after the laptop slept)"]
+        Wake["💤 Computer just woke up?<br/>→ check straight away"]
+    end
 
-    O --> D1["_store.get()"]
-    D1 --> P
-    Y --> D1
-    AB --> D1
+    Alive --> Have
+    Err --> Have
+    NoExt --> Have
+    Wake -.-> Ping
 
-    style A fill:#dfefff,stroke:#333,stroke-width:1px
-    style O fill:#e7f7e7,stroke:#333,stroke-width:1px
-    style Listener fill:#fff4d6,stroke:#333,stroke-width:1px
-    style Extension fill:#f3e0ff,stroke:#333,stroke-width:1px
+    %% ---------- Background re-login ----------
+    subgraph Relogin["⑤ Automatic re-login (in the background)"]
+        Busy{"Are you already on the<br/>CWL login page yourself?"}
+        Busy -->|"Yes"| LetYou["Stays out of your way<br/>until you finish"]
+        Busy -->|"No"| Tries{"Any tries left?<br/>Up to 3: right away,<br/>after 2 min, after 5 min"}
+        Tries -->|"No"| Ask["⚠️ Asks you to log in<br/>yourself in the browser"]
+        Tries -->|"Yes"| Tab["Extension opens Elentra in a<br/>hidden background tab"]
+        Tab --> Page{"What shows up in that tab?"}
+        Page -->|"Elentra, already signed in<br/>(UBC sign-on still valid)"| Back["✅ Back in — tab closes,<br/>keepalive carries on"]
+        Page -->|"Elentra's sign-in page"| Click["Clicks the CWL login button"]
+        Click --> Page
+        Page -->|"CWL login form"| Saved{"Did you save your<br/>CWL login?"}
+        Saved -->|"No"| Ask
+        Saved -->|"Yes"| Fill["Fills it in and submits<br/>— only on the real UBC login site"]
+        Fill --> Page
+        Page -->|"Login form comes back<br/>after the password was sent"| Wrong["🔒 Login was rejected<br/>Stops immediately so your CWL account<br/>can't get locked; auto-fill stays off<br/>until you run save-login again"]
+        Page -->|"Nothing happens for 90 s<br/>(e.g. a two-factor prompt)"| Timeout["Gives up this try, closes the tab"]
+        Wrong --> Ask
+        Timeout --> Tries
+    end
+
+    Dead --> Busy
+    LetYou --> Have
+    Back --> Have
+
+    %% ---------- Logs ----------
+    Logs[("📝 Everything is written to a daily log file<br/>(kept 14 days) for troubleshooting")]
+    Loop -.-> Logs
+    Relogin -.-> Logs
+
+    S1 -.-> B0
+    S2 -.-> Saved
+
+    style Setup fill:#eef3fb,stroke:#5b7db1
+    style Browser fill:#f3e0ff,stroke:#8a5bb1
+    style Loop fill:#e7f7e7,stroke:#4a9a4a
+    style Relogin fill:#fff4d6,stroke:#c9a23a
+    style Alive fill:#c8efc8,stroke:#2e7d32
+    style Back fill:#c8efc8,stroke:#2e7d32
+    style Dead fill:#fbd5d5,stroke:#c62828
+    style Wrong fill:#fbd5d5,stroke:#c62828
+    style Ask fill:#ffe9b3,stroke:#b8860b
