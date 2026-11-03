@@ -195,7 +195,7 @@ class _ConsoleHandler(logging.StreamHandler):
 _console: _ConsoleHandler | None = None
 
 
-def _setup_logging(log_dir: Path | None, debug: bool) -> Path | None:
+def _setup_logging(log_dir: Path | None, debug: bool, keep_days: int = 14) -> Path | None:
     """Console at INFO (DEBUG with --debug); a daily-rotated file always at DEBUG.
     Nothing logged may contain cookie values, passwords or URL query strings."""
     global _console
@@ -217,7 +217,7 @@ def _setup_logging(log_dir: Path | None, debug: bool) -> Path | None:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         path = log_dir / "keepalive.log"
-        fh = logging.handlers.TimedRotatingFileHandler(path, when="midnight", backupCount=14, encoding="utf-8")
+        fh = logging.handlers.TimedRotatingFileHandler(path, when="midnight", backupCount=keep_days, encoding="utf-8")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s %(threadName)-15s %(message)s"))
         root.addHandler(fh)
@@ -350,6 +350,7 @@ class CookieStore:
         self._refresh_result: str | None = None
         self._creds_armed_until = 0.0  # monotonic; one credential hand-out allowed
         self.state = "waiting"  # reported to the extension for its toolbar badge
+        self.slept_for = 0.0  # seconds the machine was asleep, set when wait() returns "resume"
 
     # -- cookies --
     def set(self, cookies: list[dict], login_busy: bool, force: bool) -> None:
@@ -429,7 +430,9 @@ class CookieStore:
             self._event.clear()
             if woke:
                 return "event"
-            if time.time() - t0 > chunk + RESUME_GAP:
+            gap = time.time() - t0 - chunk
+            if gap > RESUME_GAP:
+                self.slept_for = gap
                 return "resume"
 
 
@@ -465,6 +468,25 @@ def build_jar(objs: list[dict]) -> requests.cookies.RequestsCookieJar:
 # --------------------------------------------------------------------------- #
 MAX_PUSH_BYTES = 1 << 20
 EVENT_NAME = re.compile(r"^[a-z][a-z0-9-]{0,40}$")
+def _ago(seconds: float) -> str:
+    m = int(seconds // 60)
+    return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m} min"
+
+
+# Re-login progress from the extension, shown in the console as it happens.
+EVENT_TEXT = {
+    "refresh-opened": (logging.INFO, "Re-login: opened Elentra in a background tab."),
+    "refresh-skipped": (logging.INFO, "Re-login: skipped (you have a CWL login page open)."),
+    "refresh-elentra-page": (logging.INFO, "Re-login: on an Elentra page."),
+    "refresh-cwl-page": (logging.INFO, "Re-login: reached the CWL login page."),
+    "refresh-other-page": (logging.WARNING, "Re-login: landed on an unexpected page."),
+    "refresh-returned": (logging.INFO, "Re-login: back on Elentra, checking the session."),
+    "refresh-timeout": (logging.WARNING, "Re-login: timed out."),
+    "refresh-closed": (logging.WARNING, "Re-login: the background tab was closed."),
+    "refresh-no-login": (logging.WARNING, "Re-login: CWL wants a login and none is saved."),
+    "refresh-agent-error": (logging.WARNING, "Re-login: the page script failed."),
+}
+
 REFRESH_RESULTS = {"refresh-returned", "refresh-timeout", "refresh-login-rejected", "refresh-skipped", "refresh-closed", "refresh-no-login"}
 
 
@@ -561,6 +583,15 @@ class _PushHandler(BaseHTTPRequestHandler):
             return
         text = json.dumps(detail, separators=(",", ":"))[:600]
         log.debug("Extension: %s %s", name, text)
+        if name == "refresh-submitted":
+            step = str(detail.get("step", "?"))[:10]
+            if detail.get("refused"):
+                log.warning("Re-login: refused to fill the %s (not CWL's own form).", step)
+            else:
+                log.info("Re-login: submitted the %s.", step)
+        elif name in EVENT_TEXT:
+            level, msg = EVENT_TEXT[name]
+            log.log(level, msg)
         if name == "refresh-login-rejected":
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             LOGIN_BLOCK_PATH.touch()
@@ -719,6 +750,8 @@ def run_auto_loop(args) -> int:
     attempt_open = False
     last_note = ""
     force = True
+    alive_since = 0.0  # wall clock, start of the current logged-in stretch
+    pings_ok = 0
 
     def note(level: int, msg: str) -> None:
         nonlocal last_note
@@ -754,11 +787,13 @@ def run_auto_loop(args) -> int:
                 continue
             force = False
             session.cookies = build_jar(objs)
+            t_ping = time.monotonic()
             try:
                 verdict, trail = check_session(session, args.url)
             except requests.RequestException as exc:
                 verdict, trail = "error", [type(exc).__name__]
-            log.debug("Ping %s: %s", verdict, " | ".join(trail))
+            ping_ms = (time.monotonic() - t_ping) * 1000
+            log.debug("Ping %s (%.0f ms): %s", verdict, ping_ms, " | ".join(trail))
             last_check = time.monotonic()
 
             if verdict == "error":
@@ -769,6 +804,7 @@ def run_auto_loop(args) -> int:
                 else:
                     _status(f"Can't reach Elentra — {errors} failed attempts, retrying in {delay}s")
                 if _store.wait(delay) == "resume":
+                    log.info("Computer woke up after ~%s asleep.", _ago(_store.slept_for))
                     new_spell("woke from sleep")
                 continue
             if errors:
@@ -783,22 +819,32 @@ def run_auto_loop(args) -> int:
                 log.info("Logged in to Elentra — keepalive active, pinging every ~%d min.", round(args.interval / 60))
                 state = _store.state = "alive"
                 last_note = ""
+                alive_since, pings_ok = time.time(), 0
             attempts, attempt_open, dead_sig = [], False, None
             persist(objs, args.cookie_file)
+            pings_ok += 1
             delay = next_delay(args.interval)
-            _status(f"Session alive · last ping {time.strftime('%H:%M')} · next ~{time.strftime('%H:%M', time.localtime(time.time() + delay))}")
+            nxt = time.strftime("%H:%M", time.localtime(time.time() + delay))
+            up = _ago(time.time() - alive_since)
+            log.info("Ping OK (%.1f s) · logged in for %s · next ~%s", ping_ms / 1000, up, nxt)
+            _status(f"Session alive · {pings_ok} ping(s) over {up} · next ~{nxt}")
             if _store.wait(delay) == "resume":
-                log.info("Computer woke up — checking the session now.")
+                log.info("Computer woke up after ~%s asleep — checking the session now.", _ago(_store.slept_for))
                 force = True
             continue
 
         if verdict == "dead":
             dead_sig = sig
             args.cookie_file.unlink(missing_ok=True)
+            note(logging.INFO, f"Ping: not logged in ({trail[-1]}).")
 
         if state == "alive":
             _status("")
-            note(logging.WARNING, "Elentra session expired." if SESSION_COOKIE in flat else "Logged out of Elentra in the browser.")
+            if SESSION_COOKIE in flat:
+                msg = f"Elentra session expired after {_ago(time.time() - alive_since)}." if alive_since else "Elentra session expired."
+            else:
+                msg = "Logged out of Elentra in the browser."
+            note(logging.WARNING, msg)
         if state != "waiting":
             attempts, attempt_open = [], False
         state = _store.state = "waiting"
@@ -826,6 +872,7 @@ def run_auto_loop(args) -> int:
                 note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra in the browser.{hint}")
 
         if _store.wait(ACQUIRE_WAIT) == "resume":
+            log.info("Computer woke up after ~%s asleep.", _ago(_store.slept_for))
             new_spell("woke from sleep")
 
     server.shutdown()
@@ -845,6 +892,7 @@ def main() -> int:
     ap.add_argument("--url", default=PING_URL, help="Authenticated Elentra URL to ping")
     ap.add_argument("--login-url", default=LOGIN_URL, help="Elentra URL the extension loads to re-login (env: ELENTRA_LOGIN_URL)")
     ap.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR, help="Where to keep rotated debug logs")
+    ap.add_argument("--log-days", type=int, default=14, help="Days of log files to keep (0 = keep all)")
     ap.add_argument("--no-log-files", action="store_true", help="Don't write log files")
     ap.add_argument("--debug", action="store_true", help="Show debug detail in the console too")
     args = ap.parse_args()
@@ -859,9 +907,10 @@ def main() -> int:
         if not getattr(args, name).startswith(f"{BASE}/"):
             ap.error(f"--{name.replace('_', '-')} must start with {BASE}/")
 
-    log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug)
+    log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug, max(0, args.log_days))
     if log_path:
-        log.info("Detailed log: %s", log_path)
+        kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
+        log.info("Detailed log: %s (keeping %s)", log_path, kept)
     log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)

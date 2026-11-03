@@ -48,16 +48,19 @@ versions followed that redirect, which is what caused the _"Stale Request"_
 page when you logged in.) While you have a CWL login page open, the script
 holds off.
 
-The terminal prints a line only when something changes. Routine pings update one
-status line.
+The terminal prints one line per ping (response time, how long you've been
+logged in, next ping), how long the computer slept, and each step of a
+background re-login.
 
 #### 📝 Logs
 
-Detailed logs are kept for 14 days in `%LOCALAPPDATA%\elentra-keepalive\logs`
-(Windows) or `~/.local/state/elentra-keepalive/logs` (macOS/Linux). They
-include every ping result, every push from the extension and each step of a
-background re-login. They never contain cookie values, passwords or full URLs.
-Run with `--debug` to see the same detail in the terminal.
+Detailed logs go to `%LOCALAPPDATA%\elentra-keepalive\logs` (Windows) or
+`~/.local/state/elentra-keepalive/logs` (macOS/Linux): one file per day,
+kept for 14 days. Change that with `--log-days 60`, or keep everything with
+`--log-days 0`. They include every ping result, every push from the extension
+and each step of a background re-login. They never contain cookie values,
+passwords or full URLs. Run with `--debug` to see the same detail in the
+terminal.
 
 #### 🔁 Re-login after sleep
 
