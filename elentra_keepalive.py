@@ -139,6 +139,7 @@ _TAG_COLORS = {
     "ERROR": "\033[1;31m",
 }
 _RESET = "\033[0m"
+_GREY = "\033[90m"
 
 
 class _TagFormatter(logging.Formatter):
