@@ -1105,6 +1105,9 @@ def main() -> int:
             ap.error(f"--{name.replace('_', '-')} must start with {BASE}/")
 
     log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug, max(0, args.log_days))
+    _set_title("Elentra Keepalive · starting")
+    if _console:
+        _console.show_header("🩺  Elentra Keepalive", "Keeps you logged in · close this window to stop")
     banner(logging.INFO, "Starting Elentra keepalive...")
     if log_path:
         kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
