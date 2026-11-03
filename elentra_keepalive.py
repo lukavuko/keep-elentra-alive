@@ -147,8 +147,8 @@ _ITALIC_DIM = "\033[2;3m"  # terminals have no opacity; dim is the closest (~75%
 
 QUOTE_EVERY = 2 * 3600
 SPLASHES = [
-    "Also try Terraria!",
-    "Made by Notch!",
+    "Free lemonade with every ping!",
+    "Made by Chevap!",
     "Now with extra hugs!",
     "Ceci n'est pas une pipe!",
     "Lots of truthful splash texts!",
@@ -285,12 +285,12 @@ class _ConsoleHandler(logging.StreamHandler):
         if not self._quote or time.time() - self._quote_at >= QUOTE_EVERY:
             self._quote = random.choice([q for q in SPLASHES if q != self._quote])
             self._quote_at = time.time()
-        return " " * 17 + self._c(_ITALIC_DIM, self._quote) + "\n"
+        return "\n\n" + " " * 9 + self._c(_ITALIC_DIM, self._quote) + " ❤︎\n"
 
     def end_banner(self) -> None:
         self.acquire()
         try:
-            self.stream.write(self._quote_line() + "\n")
+            self.stream.write("\n" + self._quote_line() + "\n")
             self.flush()
         finally:
             self.release()
@@ -396,7 +396,7 @@ def _prevent_sleep() -> None:
     choosing Sleep still sleeps — the wake handling covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        banner(logging.WARNING, "Keeping PC awake while running!")
+        banner(logging.WARNING, "☕︎ Keeping PC awake while running!")
     elif sys.platform == "darwin":
         # caffeinate -w exits by itself when this process does.
         try:
@@ -427,13 +427,13 @@ def keychain_name() -> str:
     try:
         name = type(keyring.get_keyring()).__module__
     except Exception:  # noqa: BLE001
-        return "the OS keychain"
+        return "🔒 the OS keychain"
     if "Windows" in name:
-        return "Windows Credential Manager (encrypted)"
+        return "🔒 Windows Credential Manager"
     if "macOS" in name or "OS_X" in name:
-        return "your macOS Keychain (encrypted)"
+        return "🔒 your macOS Keychain"
     if "SecretService" in name or "kwallet" in name.lower():
-        return "your desktop keyring (encrypted)"
+        return "🔒 your desktop keyring"
     return f"the keyring backend {name}"
 
 
@@ -466,7 +466,7 @@ def set_login() -> int:
     keyring.set_password(KEYRING_SERVICE, user, pw)
     keyring.set_password(KEYRING_SERVICE, KEYRING_USER_KEY, user)
     LOGIN_BLOCK_PATH.unlink(missing_ok=True)
-    print(f"Saved login for {user}. Remove it any time with --forget-login.")
+    print(f"🗝️ Saved login for {user}. Remove it any time with --forget-login.")
     return 0
 
 
@@ -483,7 +483,7 @@ def forget_login(quiet: bool = False) -> int:
         pass
     LOGIN_BLOCK_PATH.unlink(missing_ok=True)
     if not quiet:
-        print("Saved CWL login removed." if user else "No saved CWL login.")
+        print("🗝️ Saved login removed." if user else "🗝️ No saved login.")
     return 0
 
 
@@ -780,7 +780,7 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
             "--listen-port NNNN (and update PORT in brave-extension/background.js to match)."
         )
     threading.Thread(target=server.serve_forever, name="listener", daemon=True).start()
-    banner(logging.INFO, "Listening for cookie pushes on %s:%d.\n", host, port)
+    banner(logging.INFO, "📡 Listening for cookie pushes on %s:%d.\n", host, port)
     return server
 
 
@@ -887,23 +887,19 @@ def run_auto_loop(args) -> int:
 
     creds = saved_login()
     if creds and not login_blocked():
-        banner(
-            logging.WARNING,
-            "Saved CWL login found for '%s', stored in %s.",
-            creds[0], keychain_name(),
-        )
-        banner(logging.INFO, "Background re-login will fill it in automatically if logged out.")
-        banner(logging.INFO, "To remove it: python elentra_keepalive.py --forget-login\n")
+        banner(logging.WARNING, "Saved login found for '%s' (%s)", creds[0], keychain_name())
+        banner(logging.INFO, "To remove it: `python elentra_keepalive.py --forget-login`\n")
         
     elif creds:
-        banner(logging.WARNING, "Saved CWL login was rejected last time, so autofill is off. Save it again with the save-login launcher.")
+        banner(logging.WARNING, "🚩 Saved login got rejected last time so autofill is off. Save it again with the save-login launcher.")
     else:
-        banner(logging.INFO, "No CWL login saved. If CWL asks for your password after sleep, you'll log in yourself (optional: save one with the save-login launcher).")
+        banner(logging.INFO, "No login found so login remains manual (optional: save it with the save-login launcher)")
 
     session = make_session()
     _prevent_sleep()
-    banner(logging.INFO, "Ctrl+C to shutdown (can take up to ~%ds if a ping is in flight; spam to force quit).", TIMEOUT)
-    banner(logging.INFO, "Watching for Elentra session...")
+    banner(logging.INFO, "Ctrl+C to shutdown (spam to force)")
+
+
     if _console:
         _console.end_banner()
 
@@ -1121,7 +1117,7 @@ def main() -> int:
     banner(logging.INFO, "Starting Elentra keepalive...")
     if log_path:
         kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
-        banner(logging.INFO, "Detailed logs: %s\n", log_path.parent)
+        banner(logging.INFO, "꩜ Detailed logs: %s\n", log_path.parent)
     log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)
