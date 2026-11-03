@@ -26,9 +26,9 @@ timing out.
 3. **Start the script.** Double-click `run-keepalive-for-Windows.bat` (Windows)
    or `run-keepalive-for-macOS.command` (macOS). Ctrl+C or close the window to
    stop it.
-4. **Check the badge** (pin the extension): **ON** = kept alive, **…** =
-   running but not logged in, **OFF** = script not running. Click the icon to
-   make the script re-check right away.
+4. **Check the badge** (pin the extension): 😎 = kept alive, 🫠 = running
+   but not logged in, 💀 = script not running. Click the icon to make the
+   script re-check right away.
 5. **Optional: save your CWL login** so you're logged back in after the laptop
    sleeps. Double-click `save-login-for-Windows.bat` or
    `save-login-for-macOS.command`. See [Re-login after sleep](#-re-login-after-sleep).
