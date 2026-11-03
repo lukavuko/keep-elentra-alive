@@ -976,6 +976,7 @@ def run_auto_loop(args) -> int:
             if verdict == "error":
                 errors += 1
                 delay = min(30 * errors, 300)
+                _set_title("⚠ Elentra · can't reach Elentra, retrying")
                 if errors == 1:
                     log.warning("Can't reach Elentra (%s) — retrying.", " | ".join(trail))
                 else:
