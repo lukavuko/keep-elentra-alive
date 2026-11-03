@@ -77,7 +77,9 @@ flowchart TD
         Busy -->|"No"| Attempts{"Have we exhausted any <br/>previous login attempts?"}
         Attempts -.->|"<b>Yes</b>"| Ask("fa:fa-hand-paper <b>You must log in manually</b><br/>in the browser. The script<br/>will resume automatically.")
         Attempts -->|"<b>No</b>"| Tab("fa:fa-window-restore Extension opens Elentra<br/>in a background tab")
-        Tab -->  Saved{"Is your login saved<br/> locally?"}
+        Tab --> Signed{"Already signed in?<br/>(CWL session still valid)"}
+        Signed ==>|"Yes"| Back
+        Signed -->|"No"| Saved{"Is your login saved<br/> locally?"}
         Saved -->|"Yes"| Fill("fa:fa-keyboard Fills in and submits<br/>the CWL login form<br/>automatically")
         Saved -->|"No"| Ask
         Fill ==>|"Success"| Back("fa:fa-check-circle Back in. Tab closes;<br/>the routine carries on.")
