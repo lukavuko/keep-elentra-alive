@@ -163,6 +163,10 @@ class _TagFormatter(logging.Formatter):
         record.cend = _RESET if tint else ""
         return super().format(record)
 
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        stamp = super().formatTime(record, datefmt)
+        return f"{_GREY}{stamp}{_RESET}" if self.color else stamp
+
 
 def _enable_windows_ansi() -> bool:
     try:
@@ -307,7 +311,7 @@ def _prevent_sleep() -> None:
     choosing Sleep still sleeps — the wake handling covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        banner(logging.INFO, "Keeping this PC awake while running. Close this window when you're done.")
+        banner(logging.WARNING, "Keeping PC awake while running!")
     elif sys.platform == "darwin":
         # caffeinate -w exits by itself when this process does.
         try:
@@ -340,11 +344,11 @@ def keychain_name() -> str:
     except Exception:  # noqa: BLE001
         return "the OS keychain"
     if "Windows" in name:
-        return "Windows Credential Manager (encrypted with your Windows login)"
+        return "Windows Credential Manager (encrypted)"
     if "macOS" in name or "OS_X" in name:
-        return "your macOS Keychain (encrypted with your Mac login)"
+        return "your macOS Keychain (encrypted)"
     if "SecretService" in name or "kwallet" in name.lower():
-        return "your desktop keyring (encrypted with your login)"
+        return "your desktop keyring (encrypted)"
     return f"the keyring backend {name}"
 
 
@@ -691,7 +695,7 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
             "--listen-port NNNN (and update PORT in brave-extension/background.js to match)."
         )
     threading.Thread(target=server.serve_forever, name="listener", daemon=True).start()
-    banner(logging.INFO, "Listening for the browser extension's cookie pushes on %s:%d.", host, port)
+    banner(logging.INFO, "Listening for cookie pushes on %s:%d.\n", host, port)
     return server
 
 
@@ -800,10 +804,12 @@ def run_auto_loop(args) -> int:
     if creds and not login_blocked():
         banner(
             logging.WARNING,
-            "Saved CWL login found for '%s', stored in %s. Background re-login will fill it in "
-            "after sleep. To remove it: python elentra_keepalive.py --forget-login",
+            "Saved CWL login found for '%s', stored in %s.",
             creds[0], keychain_name(),
         )
+        banner(logging.INFO, "Background re-login will fill it in automatically if logged out.")
+        banner(logging.INFO, "To remove it: python elentra_keepalive.py --forget-login\n")
+        
     elif creds:
         banner(logging.WARNING, "Saved CWL login was rejected last time, so autofill is off. Save it again with the save-login launcher.")
     else:
@@ -811,8 +817,8 @@ def run_auto_loop(args) -> int:
 
     session = make_session()
     _prevent_sleep()
-    banner(logging.INFO, "Ctrl+C to stop (can take up to ~%ds if a ping is in flight; press again to force quit).", TIMEOUT)
-    banner(logging.INFO, "Watching for a logged-in Elentra session. Log in to Elentra in Brave/Chrome if you aren't already.")
+    banner(logging.INFO, "Ctrl+C to shutdown (can take up to ~%ds if a ping is in flight; spam to force quit).", TIMEOUT)
+    banner(logging.INFO, "Watching for Elentra session...")
     if _console:
         _console.end_banner()
 
@@ -1017,7 +1023,7 @@ def main() -> int:
     banner(logging.INFO, "Starting Elentra keepalive...")
     if log_path:
         kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
-        banner(logging.INFO, "Detailed log: %s (keeping %s)", log_path.parent, kept)
+        banner(logging.INFO, "Detailed logs: %s\n", log_path.parent)
     log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)
