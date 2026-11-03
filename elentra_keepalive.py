@@ -39,6 +39,7 @@ import logging.handlers
 import os
 import random
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -157,21 +158,48 @@ def _enable_windows_ansi() -> bool:
         return False
 
 
+_ANSI = re.compile(r"\033\[[0-9;]*[A-Za-z]")
+
+
 class _ConsoleHandler(logging.StreamHandler):
-    """In a real terminal, keeps one status line pinned below the log."""
+    """In a real terminal, keeps one status line pinned below the log.
+
+    Lines logged with extra={"transient": True} (retries, re-login steps, the
+    latest ping) can be erased by clear_transient() once things succeed.
+    Everything else stays on screen. The log file always keeps every line."""
 
     def __init__(self, live: bool) -> None:
         super().__init__()
         self.live = live
         self._status = ""
+        self._transient_rows = 0  # screen rows of transient lines right above the status line
+
+    def _rows(self, text: str) -> int:
+        cols = max(20, shutil.get_terminal_size((100, 24)).columns)
+        return sum(max(1, -(-len(_ANSI.sub("", line)) // cols)) for line in text.split("\n"))
 
     def emit(self, record: logging.LogRecord) -> None:
         if self._status:
             self.stream.write("\r\033[K")
         super().emit(record)
+        if getattr(record, "transient", False):
+            if self.live:
+                self._transient_rows += self._rows(self.format(record))
+        else:
+            self._transient_rows = 0  # anything above a lasting line stays put
         if self._status:
             self.stream.write(self._status)
             self.flush()
+
+    def clear_transient(self) -> None:
+        self.acquire()
+        try:
+            if self.live and self._transient_rows:
+                self.stream.write(f"\r\033[K\033[{self._transient_rows}A\r\033[J{self._status}")
+                self.flush()
+            self._transient_rows = 0
+        finally:
+            self.release()
 
     def set_status(self, text: str) -> None:
         self.acquire()
@@ -179,15 +207,6 @@ class _ConsoleHandler(logging.StreamHandler):
             self.stream.write("\r\033[K" + text)
             self.flush()
             self._status = text
-        finally:
-            self.release()
-
-    def clear_screen(self) -> None:
-        self.acquire()
-        try:
-            self.stream.write("\033[2J\033[3J\033[H")
-            self.flush()
-            self._status = ""
         finally:
             self.release()
 
@@ -235,9 +254,14 @@ def _status(text: str) -> None:
         log.info(text)
 
 
-def _clear_screen() -> None:
-    if _console and _console.live:
-        _console.clear_screen()
+def _clear_transient() -> None:
+    if _console:
+        _console.clear_transient()
+
+
+def tlog(level: int, msg: str, *args) -> None:
+    """A repeating/progress line: erased from the console once things succeed."""
+    log.log(level, msg, *args, extra={"transient": True})
 
 
 def safe_url(url: str) -> str:
@@ -259,12 +283,12 @@ def _prevent_sleep() -> None:
     choosing Sleep still sleeps — the wake handling covers that)."""
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-        log.info("Keeping this PC awake while running — close me when you're done.")
+        log.info("Keeping this PC awake while running. Close this window when you're done.")
     elif sys.platform == "darwin":
         # caffeinate -w exits by itself when this process does.
         try:
             subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log.info("Keeping this Mac awake while running — close me when you're done.")
+            log.info("Keeping this Mac awake while running. Close this window when you're done.")
         except OSError:
             log.debug("caffeinate not available; the Mac may idle-sleep.")
 
@@ -286,6 +310,20 @@ def _handle_signal(signum, _frame):
 # --------------------------------------------------------------------------- #
 # Saved CWL login (OS keychain)
 # --------------------------------------------------------------------------- #
+def keychain_name() -> str:
+    try:
+        name = type(keyring.get_keyring()).__module__
+    except Exception:  # noqa: BLE001
+        return "the OS keychain"
+    if "Windows" in name:
+        return "Windows Credential Manager (encrypted with your Windows login)"
+    if "macOS" in name or "OS_X" in name:
+        return "your macOS Keychain (encrypted with your Mac login)"
+    if "SecretService" in name or "kwallet" in name.lower():
+        return "your desktop keyring (encrypted with your login)"
+    return f"the keyring backend {name}"
+
+
 def saved_login() -> tuple[str, str] | None:
     try:
         user = keyring.get_password(KEYRING_SERVICE, KEYRING_USER_KEY)
@@ -564,7 +602,7 @@ class _PushHandler(BaseHTTPRequestHandler):
         names = ", ".join(sorted({str(c.get("name", "?")) for c in cookies})) or "(none)"
         log.debug("Push (%s): %d cookie(s) [%s]%s", reason, len(cookies), names, " · CWL login page open" if login_busy else "")
         if reason == "resume":
-            log.info("Browser reports the computer woke up — checking the session.")
+            tlog(logging.INFO, "Browser reports you're back — checking the session.")
         elif reason == "resync":
             log.info("Resync requested from the extension.")
 
@@ -572,7 +610,7 @@ class _PushHandler(BaseHTTPRequestHandler):
         action = _store.take_action()
         if action:
             reply["action"] = action
-            log.debug("Handing the extension: %s", action["type"])
+            tlog(logging.INFO, "Re-login: asked the extension (in reply to its POST /cookies) to open %s in a background tab.", safe_url(action.get("url", "")))
         self._send(200, reply)
 
     def _event(self, payload: dict) -> None:
@@ -583,15 +621,21 @@ class _PushHandler(BaseHTTPRequestHandler):
             return
         text = json.dumps(detail, separators=(",", ":"))[:600]
         log.debug("Extension: %s %s", name, text)
-        if name == "refresh-submitted":
+        if name == "refresh-request":
+            line = f"{str(detail.get('method', '?'))[:8]} {str(detail.get('url', '?'))[:120]} -> {str(detail.get('status', '?'))[:40]}"
+            if detail.get("redirect"):
+                line += f" -> redirect to {str(detail['redirect'])[:120]}"
+            tlog(logging.INFO, "Re-login:   %s", line)
+        elif name == "refresh-submitted":
             step = str(detail.get("step", "?"))[:10]
             if detail.get("refused"):
-                log.warning("Re-login: refused to fill the %s (not CWL's own form).", step)
+                tlog(logging.WARNING, "Re-login: refused to fill the %s (not CWL's own form).", step)
             else:
-                log.info("Re-login: submitted the %s.", step)
+                tlog(logging.INFO, "Re-login: filled and submitted the %s (form: %s).", step, str(detail.get("form", "?"))[:120])
         elif name in EVENT_TEXT:
             level, msg = EVENT_TEXT[name]
-            log.log(level, msg)
+            extra = detail.get("url") or detail.get("why") or detail.get("error") or ""
+            tlog(level, "%s%s", msg, f" ({str(extra)[:120]})" if extra else "")
         if name == "refresh-login-rejected":
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             LOGIN_BLOCK_PATH.touch()
@@ -603,10 +647,10 @@ class _PushHandler(BaseHTTPRequestHandler):
     def _credentials(self) -> None:
         creds = _store.take_credentials()
         if creds is None:
-            log.debug("Extension asked for the saved login: none available (not saved, blocked, or not armed).")
+            tlog(logging.INFO, "Re-login: POST 127.0.0.1/credentials -> 404 (no saved login, blocked, or no attempt running).")
             self._send(404, {})
             return
-        log.info("Filling the saved CWL login in the background re-login tab.")
+        tlog(logging.INFO, "Re-login: POST 127.0.0.1/credentials -> 200 (saved login handed to the re-login tab).")
         self._send(200, {"username": creds[0], "password": creds[1]})
 
     def log_message(self, fmt, *args):
@@ -623,7 +667,7 @@ def start_listener(host: str, port: int) -> ThreadingHTTPServer:
             "--listen-port NNNN (and update PORT in brave-extension/background.js to match)."
         )
     threading.Thread(target=server.serve_forever, name="listener", daemon=True).start()
-    log.info("Listening for the browser extension on %s:%d.", host, port)
+    log.info("Listening for the browser extension's cookie pushes on %s:%d.", host, port)
     return server
 
 
@@ -670,15 +714,15 @@ def check_session(session: requests.Session, url: str) -> tuple[str, list[str]]:
     trail: list[str] = []
     for _ in range(MAX_HOPS):
         resp = session.get(url, timeout=TIMEOUT, allow_redirects=False)
-        trail.append(f"{resp.status_code} {safe_url(url)}")
+        trail.append(f"GET {safe_url(url)} -> {resp.status_code}")
         if resp.is_redirect:
             nxt = urljoin(url, resp.headers.get("Location", ""))
             p = urlsplit(nxt)
             if p.scheme != "https" or (p.hostname or "").lower() != ELENTRA_HOST:
-                trail.append(f"-> {p.hostname} (not followed)")
+                trail.append(f"redirect to {p.hostname} (not followed)")
                 return "dead", trail
             if "/login" in p.path.lower():
-                trail.append(f"-> {p.path} (login page)")
+                trail.append(f"redirect to {p.path} (login page)")
                 return "dead", trail
             url = nxt
             continue
@@ -733,14 +777,20 @@ def run_auto_loop(args) -> int:
 
     creds = saved_login()
     if creds and not login_blocked():
-        log.info("Saved CWL login found (%s) — background re-login can fill it in.", creds[0])
+        log.warning(
+            "Saved CWL login found for '%s', stored in %s. Background re-login will fill it in "
+            "after sleep. To remove it: python elentra_keepalive.py --forget-login",
+            creds[0], keychain_name(),
+        )
     elif creds:
-        log.warning("Saved CWL login was rejected last time — run --set-login to update it.")
+        log.warning("Saved CWL login was rejected last time, so autofill is off. Save it again with the save-login launcher.")
     else:
-        log.debug("No saved CWL login; background re-login relies on CWL's own session.")
+        log.info("No CWL login saved. If CWL asks for your password after sleep, you'll log in yourself (optional: save one with the save-login launcher).")
 
     session = make_session()
     _prevent_sleep()
+    log.info("Ctrl+C to stop (can take up to ~%ds if a ping is in flight; press again to force quit).", TIMEOUT)
+    log.info("Watching for a logged-in Elentra session. Log in to Elentra in Brave/Chrome if you aren't already.")
 
     state = ""  # "", "alive" or "waiting"
     errors = 0
@@ -753,10 +803,10 @@ def run_auto_loop(args) -> int:
     alive_since = 0.0  # wall clock, start of the current logged-in stretch
     pings_ok = 0
 
-    def note(level: int, msg: str) -> None:
+    def note(level: int, msg: str, transient: bool = False) -> None:
         nonlocal last_note
         if msg != last_note:
-            log.log(level, msg)
+            log.log(level, msg, extra={"transient": transient})
             last_note = msg
 
     def new_spell(why: str) -> None:
@@ -770,7 +820,7 @@ def run_auto_loop(args) -> int:
         result = _store.take_refresh_result()
         if result:
             attempt_open = False
-            log.debug("Re-login attempt %d ended: %s", len(attempts), result)
+            tlog(logging.INFO, "Re-login attempt %d ended: %s", len(attempts), result)
             if result == "refresh-skipped" and attempts:
                 attempts.pop()  # user was logging in themselves; doesn't count
 
@@ -782,7 +832,7 @@ def run_auto_loop(args) -> int:
         due = force or state != "waiting" or sig != dead_sig or time.monotonic() - last_check >= WAITING_RECHECK
         if SESSION_COOKIE in flat and due:
             if _store.login_busy() and state == "waiting" and not force:
-                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.")
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", transient=True)
                 _store.wait(ACQUIRE_WAIT)
                 continue
             force = False
@@ -800,7 +850,7 @@ def run_auto_loop(args) -> int:
                 errors += 1
                 delay = min(30 * errors, 300)
                 if errors == 1:
-                    log.warning("Can't reach Elentra (%s) — retrying.", trail[-1])
+                    tlog(logging.WARNING, "Can't reach Elentra (%s) — retrying.", " | ".join(trail))
                 else:
                     _status(f"Can't reach Elentra — {errors} failed attempts, retrying in {delay}s")
                 if _store.wait(delay) == "resume":
@@ -808,14 +858,15 @@ def run_auto_loop(args) -> int:
                     new_spell("woke from sleep")
                 continue
             if errors:
-                log.info("Connection to Elentra restored.")
+                _clear_transient()
+                log.info("Connection to Elentra restored after %d failed attempt(s).", errors)
                 errors = 0
         elif SESSION_COOKIE not in flat:
             force = False
 
         if verdict == "alive":
             if state != "alive":
-                _clear_screen()
+                _clear_transient()
                 log.info("Logged in to Elentra — keepalive active, pinging every ~%d min.", round(args.interval / 60))
                 state = _store.state = "alive"
                 last_note = ""
@@ -826,7 +877,8 @@ def run_auto_loop(args) -> int:
             delay = next_delay(args.interval)
             nxt = time.strftime("%H:%M", time.localtime(time.time() + delay))
             up = _ago(time.time() - alive_since)
-            log.info("Ping OK (%.1f s) · logged in for %s · next ~%s", ping_ms / 1000, up, nxt)
+            _clear_transient()  # the previous ping line
+            tlog(logging.INFO, "Ping OK: %s (%.1f s) · logged in for %s · next ~%s", " | ".join(trail), ping_ms / 1000, up, nxt)
             _status(f"Session alive · {pings_ok} ping(s) over {up} · next ~{nxt}")
             if _store.wait(delay) == "resume":
                 log.info("Computer woke up after ~%s asleep — checking the session now.", _ago(_store.slept_for))
@@ -836,7 +888,7 @@ def run_auto_loop(args) -> int:
         if verdict == "dead":
             dead_sig = sig
             args.cookie_file.unlink(missing_ok=True)
-            note(logging.INFO, f"Ping: not logged in ({trail[-1]}).")
+            note(logging.INFO, f"Ping: not logged in. {' | '.join(trail)}", transient=True)
 
         if state == "alive":
             _status("")
@@ -855,18 +907,18 @@ def run_auto_loop(args) -> int:
             maybe_refresh = objs or saved_login()
             if attempt_open and time.monotonic() - attempts[-1] > REFRESH_WINDOW:
                 attempt_open = False
-                log.debug("Re-login attempt %d: no result from the extension in time.", len(attempts))
+                tlog(logging.WARNING, "Re-login attempt %d: no result from the extension in time.", len(attempts))
             if not maybe_refresh:
                 note(logging.WARNING, "Waiting for you to log in to Elentra.")
             elif _store.login_busy():
-                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.")
+                note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", transient=True)
             elif not attempt_open and len(attempts) < len(REFRESH_BACKOFF):
                 since = time.monotonic() - attempts[-1] if attempts else float("inf")
                 if since >= REFRESH_BACKOFF[len(attempts)]:
                     attempts.append(time.monotonic())
                     attempt_open = True
                     _store.request_refresh(args.login_url)
-                    note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...")
+                    note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", transient=True)
             elif not attempt_open:
                 hint = "" if saved_login() else " (Tip: save your CWL login with --set-login.)"
                 note(logging.WARNING, f"Background re-login didn't work — please log in to Elentra in the browser.{hint}")
@@ -908,9 +960,10 @@ def main() -> int:
             ap.error(f"--{name.replace('_', '-')} must start with {BASE}/")
 
     log_path = _setup_logging(None if args.no_log_files else args.log_dir, args.debug, max(0, args.log_days))
+    log.info("Starting Elentra keepalive...")
     if log_path:
         kept = "all days" if args.log_days <= 0 else f"{args.log_days} days"
-        log.info("Detailed log: %s (keeping %s)", log_path, kept)
+        log.info("Detailed log: %s (keeping %s)", log_path.parent, kept)
     log.debug("Started: python %s, interval %ds, ping %s", sys.version.split()[0], args.interval, safe_url(args.url))
 
     signal.signal(signal.SIGINT, _handle_signal)
