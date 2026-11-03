@@ -58,11 +58,13 @@ versions followed that redirect, which is what caused the _"Stale Request"_
 page when you logged in.) While you have a CWL login page open, the script
 holds off.
 
-The terminal keeps everything you should know on screen: the startup notes
-(where logs go, whether a CWL login is saved and where, that the computer is
-kept awake, how to stop), wake-ups, logouts and failures. Lines that repeat
-(the latest ping, each re-login attempt with every request it made and the
-response) are tidied away once the session is back.
+Every terminal line is tagged `[INFO]`, `[OK]`, `[LOGIN]` (a background
+re-login step: each request and its response), `[WARN]` or `[ERROR]`. The
+startup notes (where logs go, whether a CWL login is saved and where, that the
+computer is kept awake, how to stop) always stay at the top. After each
+successful ping, or once re-login attempts run out, the rest of the screen is
+cleared, so you only see the latest state: how long you've been logged in and
+when the next ping is. Everything cleared is still in the log file.
 
 #### 📝 Logs
 
