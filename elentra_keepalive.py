@@ -967,7 +967,8 @@ def run_auto_loop(args) -> int:
             elif not attempt_open:
                 hint = "" if saved_login() else " (Tip: save your CWL login with the save-login launcher.)"
                 msg = f"Background re-login didn't work after {len(attempts)} attempts — please log in to Elentra manually.{hint}"
-                if msg != last_note:
+                if gave_up_at != attempts[0]:
+                    gave_up_at = attempts[0]
                     # attempts are done: clear their steps off the console (the log file keeps them)
                     fresh_screen()
                     log.warning(msg)
