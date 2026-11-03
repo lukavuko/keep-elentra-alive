@@ -292,7 +292,7 @@ async function onRefreshPage(tabId, url) {
     if (!c) return finishRefresh("refresh-no-login", { why: "CWL asked for a password; no saved login (or it's blocked)" });
     await setRefresh({ pwSent: true, userSent: true });
     const res = await runAgent(tabId, "fill", c.username, c.password);
-    report("refresh-submitted", { step: "password", submitted: !!(res && res.submitted), refused: !!(res && res.refused) });
+    report("refresh-submitted", { step: "password", submitted: !!(res && res.submitted), refused: !!(res && res.refused), form: res && res.form });
   } else if (info.hasUser) {
     // Two-step form (username first).
     if (r.userSent) return finishRefresh("refresh-login-rejected", { error: info.error, step: "username" });
