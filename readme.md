@@ -44,9 +44,11 @@ timing out.
 
 ## ⚙️ How it works
 
+![How Elentra Keepalive keeps you logged in](mermaid-graphical-view.png)
+
 1. **Extension** (`brave-extension/`): an MV3 extension that reads your Elentra
-   and SSO cookies, including httpOnly ones, and sends them to
-   `127.0.0.1:8765`.
+   session cookies, including httpOnly ones, and sends them to
+   `127.0.0.1:8765`. CWL login cookies never leave the browser.
 2. **Script** (`elentra_keepalive.py`): listens on `127.0.0.1:8765`. Once it has
    a valid cookie, it pings the Elentra dashboard every ~15 minutes (± 3).
 
