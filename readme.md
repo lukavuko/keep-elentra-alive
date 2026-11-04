@@ -2,32 +2,35 @@
 updated: 2026-11-03 22:07:17
 ---
 
+<br/>
+
 # 🩺 Let's Keep Elentra Alive
 
-Tired of being logged out of Elentra mid-lecture? Keep reading.
+*Tired of being logged out of Elentra? Keep reading.*
+
+<br/>
 
 ## ⚙️ What it do?
 
-**While online, this program prevents your Elentra session from timing out. It just keeps you logged in as long as it's running!**
+**While online, this program prevents your Elentra session from timing out; thus, keeping you logged in as long as it runs!**
 
-In addition, I've added a few recent improvements that allows the software to auto-login for you in the background. This is an optional feature as it requires you to store your CWL credentials locally, however this is done in an encrypted keyring which adds security   
+In addition, I've recently added a few improvements allowing the program to auto login in the background. This is an extremely convenient but optional feature as it requires you to store your CWL credentials locally (for security, it will do so in an encrypted keyring). 
 
-> [!TIP]
-> **If you're already set up:**
-> 1. Double-click `run-keepalive-for-Windows.bat` (or `run-keepalive-for-macOS.command`)
-> 2. Log in to Elentra in Brave/Chrome. The extension badge will turn 😎 when you're good.
-> 3. Logged out after sleep? With a saved login it can sign you back in by itself. Without one, just log in again.
->
+<br/>
+
+> [!NOTE]
+> **If you're already set up you can start the program again by...**
+> 1. Double-clicking `run-keepalive-for-Windows.bat` (or `run-keepalive-for-macOS.command`)
+> 2. Logging in to Elentra in your browser (see the extension badge turn 😎 when you're good)
+> 3. And optionally, save a login to help sign you back in automatically.
+
+<br/>
 
 ## 🚀 How to intall it
 
+> If you only need to update it, (1) run `git pull` from inside of the program directory, and then (2) re-load the web extension in browser. 
 
-
-> 
->
-> If you only need to update it, run `git pull` in your downloaded directory and re-load the web extension.
-
-#### If you've never heard of Git, you may start here
+### a) If you've never heard of Git, you may start here
 
 1. Identify your 💻**Terminal** for executing commands
     - Windows: <u>PowerShell</u> which you can use with [Windows Terminal](https://apps.microsoft.com/detail/9n0dx20hk701?hl=en-US&gl=US) for a nicer experience
@@ -36,7 +39,7 @@ In addition, I've added a few recent improvements that allows the software to au
     - Link to the [latest installer](https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/Git-2.56.0.4-64-bit.exe) for [Git for Windows](https://git-scm.com/install/windows)
     - On MacOS you can install it via commands in terminal ([see this page](https://git-scm.com/install/mac))
 
-#### If you have Git, start here
+### b) If you have Git, start here
 
 1. **Install** **Python**.
     - The [link for Windows installer](https://www.python.org/ftp/python/pymanager/python-manager-26.4.msix) (see all downloads [here](https://www.python.org/downloads/))
@@ -54,17 +57,18 @@ In addition, I've added a few recent improvements that allows the software to au
     Double-click `run-keepalive-for-Windows.bat` (Windows) or `run-keepalive-for-macOS.command` (macOS).
 5. **Login** to Elentra and see the magic!
 
+<br/>
 
-
+> [!TIP]
 > **On a Mac:** the first time you open a `.command` file, macOS may say it can't be opened. 
 > Right-click it, choose **Open**, then **Open** again. 
 >
 > If macOS asks whether Python may use your keychain, choose **Always Allow** so that
 > re-login works while you're away.
 
+<br/>
 
-
-#### For automatically logging you in (optional but super useful)
+### c) For automatically logging you in (optional but super useful)
 
 1. Save your CWL login by double-clicking `save-login-for-Windows.bat` or`save-login-for-macOS.command`
 2. It will interactively prompt you to save these to a locally encrypted keyring (text will remain invisible when you type)
@@ -72,6 +76,7 @@ In addition, I've added a few recent improvements that allows the software to au
 
 For more information, see the [automatic login section](#-auto-login-feature).
 
+<br/>
 
 ## 📋 Requirements
 
@@ -80,13 +85,13 @@ For more information, see the [automatic login section](#-auto-login-feature).
 - [`requests`](https://pypi.org/project/requests/) and [`keyring`](https://pypi.org/project/keyring/): `pip install -r requirements.txt`
   (the script installs them itself if missing)
 
+<br/>
+
 ## ⚙️ How it works for the curious minded 
 
 1. **Extension** (`brave-extension/`): an MV3 extension that reads your Elentra
-   session cookies, including httpOnly ones, and sends them to
-   `127.0.0.1:8765`. CWL login cookies never leave the browser.
-2. **Script** (`elentra_keepalive.py`): listens on `127.0.0.1:8765`. Once it has
-   a valid cookie, it pings the Elentra dashboard every ~15 minutes (± 3).
+   **session** cookies, including httpOnly ones, and sends them to `127.0.0.1:8765`. Login cookies however never leave the browser.
+2. **Script** (`elentra_keepalive.py`): listens on `127.0.0.1:8765`. Once it has a valid cookie, it pings Elentra dashboard every ~15min
 
 ![How Elentra Keepalive keeps you logged in](mermaid-graphical-view.png)
 
@@ -117,6 +122,7 @@ Keynotes
 - You can remove any stored credentials by running `python elentra_keepalive.py --forget-login` 
     in your terminal from inside the directory of the software.
 
+<br/>
 
 ## 🤔 Considerations
 
@@ -156,6 +162,7 @@ Keynotes
 
 > **Little to none.** One ping every ~15 minutes.
 
+<br/>
 
 ## ⚠️ Disclaimer
 
@@ -167,6 +174,8 @@ acceptable-use policies.
 
 In addition, parts (the majority) of this project was built with AI tooling though a human reviewed and tested
 everything before publishing anything.
+
+<br/>
 
 ## 📄 License
 
