@@ -2,8 +2,6 @@
 updated: 2026-11-03 22:07:17
 ---
 
-<br/>
-
 # 🩺 Let's Keep Elentra Alive
 
 *Tired of being logged out of Elentra? Keep reading.*
@@ -16,8 +14,6 @@ updated: 2026-11-03 22:07:17
 
 In addition, I've recently added a few improvements allowing the program to auto login in the background. This is an extremely convenient but optional feature as it requires you to store your CWL credentials locally (for security, it will do so in an encrypted keyring). 
 
-<br/>
-
 > [!NOTE]
 > **If you're already set up you can start the program again by...**
 > 1. Double-clicking `run-keepalive-for-Windows.bat` (or `run-keepalive-for-macOS.command`)
@@ -26,7 +22,7 @@ In addition, I've recently added a few improvements allowing the program to auto
 
 <br/>
 
-## 🚀 How to intall it
+## 🚀 How to install it
 
 > If you only need to update it, (1) run `git pull` from inside of the program directory, and then (2) re-load the web extension in browser. 
 
