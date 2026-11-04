@@ -1,6 +1,5 @@
----
-updated: 2026-11-03 22:07:17
----
+
+`updated: 2026-11-03`
 
 # 🩺 Let's Keep Elentra Alive
 
@@ -12,15 +11,13 @@ updated: 2026-11-03 22:07:17
 
 **While online, this program prevents your Elentra session from timing out; thus, keeping you logged in as long as it runs!**
 
-In addition, I've recently added a few improvements allowing the program to auto login in the background. This is an extremely convenient but optional feature as it requires you to store your CWL credentials locally (for security, it will do so in an encrypted keyring). 
+In addition, I've recently added a few improvements that allow the program to auto login (in the background) if you've been disconnected from the internet or if your PC was asleep. I found this to be an extremely convenient feature, but it's optional as it requires you to store your CWL credentials locally (for security, this is done so in an encrypted keyring). 
 
 > [!NOTE]
 > **If you're already set up you can start the program again by...**
 > 1. Double-clicking `run-keepalive-for-Windows.bat` (or `run-keepalive-for-macOS.command`)
 > 2. Logging in to Elentra in your browser (see the extension badge turn 😎 when you're good)
 > 3. And optionally, save a login to help sign you back in automatically.
-
-<br/>
 
 ## 🚀 How to install it
 
