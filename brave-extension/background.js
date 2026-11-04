@@ -1,8 +1,9 @@
 // Elentra Keepalive Cookie Bridge — MV3 service worker.
 //
 // Pushes the Elentra session cookies (including httpOnly ones) to the local
-// keepalive script: on cookie changes, on a 1-minute alarm, on browser start,
-// when the computer wakes (idle API), and when you click the toolbar icon.
+// keepalive script: on cookie changes, on a 30-second alarm, on browser start,
+// when the computer wakes (idle API), when an Elentra tab is sent to the CWL
+// login page (session expired), and when you click the toolbar icon.
 //
 // Only ubc.elentra.cloud cookies are sent. CWL login-server cookies never leave
 // the browser — the script used to replay them, which started competing logins
@@ -25,6 +26,9 @@ const IDP_HOST = "authentication.ubc.ca";
 
 const LOGIN_BUSY_MS = 2 * 60 * 1000; // a CWL page navigated this recently = you're logging in
 const REFRESH_TIMEOUT_MIN = 1.5;
+const PUSH_PERIOD_MIN = 0.5; // the shortest alarm period Chromium allows
+// "expired": a ping takes ~0.5–1.5 s, so the re-login request is ready almost at once.
+const FOLLOWUP_MS = { resume: 15000, resync: 15000, expired: 3000 };
 
 const BADGES = {
   alive: ["😎", "#2e7d32", "Elentra keepalive: session alive (click to resync)"],
@@ -112,11 +116,12 @@ async function push(reason) {
   }
   reply = reply || {};
   setBadge(reply.state);
-  if (reply.action && reply.action.type === "refresh") silentRefresh(reply.action.url);
-  // After a wake/resync the script decides on a re-login a moment later; come
-  // back for it instead of waiting for the 1-minute alarm.
-  if ((reason === "resume" || reason === "resync") && reply.state !== "alive") {
-    setTimeout(() => push("followup"), 15000);
+  if (reply.action && reply.action.type === "refresh") silentRefresh(reply.action.url, !!reply.action.autofill);
+  // After a wake/resync/expiry the script pings and decides on a re-login a
+  // moment later; come back for it instead of waiting for the alarm.
+  // ("expired" always: the script still says "alive" until its ping finishes.)
+  if (reason in FOLLOWUP_MS && (reason === "expired" || reply.state !== "alive")) {
+    setTimeout(() => push("followup"), FOLLOWUP_MS[reason]);
   }
   return reply;
 }
@@ -137,7 +142,9 @@ async function setRefresh(patch) {
   await chrome.storage.session.set({ refresh: { ...cur, ...patch } });
 }
 
-async function silentRefresh(url) {
+// autofill: the script has a saved login, so go ahead even if you have a CWL
+// page open — your own form may go "Stale Request", but you'll be logged in.
+async function silentRefresh(url, autofill = false) {
   let target;
   try {
     target = new URL(url);
@@ -146,7 +153,7 @@ async function silentRefresh(url) {
   }
   if (target.origin !== ELENTRA_ORIGIN) return;
   if (await getRefresh()) return; // one at a time
-  if (await loginInProgress()) {
+  if (!autofill && (await loginInProgress())) {
     report("refresh-skipped", { why: "you have a CWL login page open" });
     return;
   }
@@ -337,6 +344,17 @@ chrome.webRequest.onBeforeRedirect.addListener((d) => reportRequest(d, d.statusC
 chrome.webRequest.onCompleted.addListener((d) => reportRequest(d, d.statusCode), REQ_FILTER);
 chrome.webRequest.onErrorOccurred.addListener((d) => reportRequest(d, d.error), REQ_FILTER);
 
+// One of your own Elentra tabs being sent to the CWL login server means the
+// session just expired — tell the script now rather than at the next alarm.
+chrome.webRequest.onBeforeRedirect.addListener(
+  async (d) => {
+    if (d.tabId < 0 || hostOf(d.url) !== ELENTRA_HOST || hostOf(d.redirectUrl) !== IDP_HOST) return;
+    if (await getRefresh()) return; // a re-login is already running (or this is its tab)
+    schedule("expired");
+  },
+  { urls: [`${ELENTRA_ORIGIN}/*`], types: ["main_frame"] }
+);
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const r = await getRefresh();
   if (r && r.tabId === tabId) finishRefresh("refresh-closed", { why: "tab closed" }, false);
@@ -375,8 +393,8 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   }
 });
 
-// Create the alarm only if missing — re-creating it on every worker start-up
-// would keep resetting its 1-minute schedule.
+// Create the alarm only if missing (or left over with an old period) —
+// re-creating it on every worker start-up would keep resetting its schedule.
 chrome.alarms.get("push").then((a) => {
-  if (!a) chrome.alarms.create("push", { periodInMinutes: 1 });
+  if (!a || a.periodInMinutes !== PUSH_PERIOD_MIN) chrome.alarms.create("push", { periodInMinutes: PUSH_PERIOD_MIN });
 });

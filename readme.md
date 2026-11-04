@@ -79,6 +79,9 @@ Keynotes
 - If CWL rejects it, autofill switches off until you save it again, so a
   changed password can't lock your account with retries.
 - If CWL asks for MFA (e.g. on a VPN), the re-login waits for it, then gives up.
+- Re-login starts even if you have a CWL login page open. That page may then
+  say _"Stale Request"_; reload Elentra and you're logged in. (Without a saved
+  login, the script waits while a CWL login page is open.)
 - Remove any stored credentials with `python elentra_keepalive.py --forget-login`.
 
 The page defaults to `https://ubc.elentra.cloud/`. Change it with the

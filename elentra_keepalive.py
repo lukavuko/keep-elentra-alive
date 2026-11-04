@@ -65,6 +65,7 @@ except ImportError:
     import requests
 
 ELENTRA_HOST = "ubc.elentra.cloud"
+IDP_HOST = "authentication.ubc.ca"  # CWL login server (never contacted by this script)
 BASE = f"https://{ELENTRA_HOST}"
 PING_URL = f"{BASE}/dashboard"
 # Loaded in a background browser tab to re-login. Must stay on BASE — the
@@ -86,7 +87,7 @@ RESUME_GAP = 60  # wall clock jumping this far past a slice = we were asleep
 
 # Background re-login: attempts per logged-out spell and the delay before each.
 REFRESH_BACKOFF = (0, 120, 300)
-# How long one attempt may take (extension pickup on its 1-min push + SSO).
+# How long one attempt may take (extension pickup on its 30-s push + SSO).
 REFRESH_WINDOW = 180
 
 ES_CONTINUOUS = 0x80000000
@@ -374,6 +375,11 @@ def ok(msg: str, *args) -> None:
 
 def step(level: int, msg: str, *args) -> None:
     """One step of a background re-login."""
+    # Steps that arrive after the login is already confirmed (the tab's last
+    # page loads, "Back on Elentra") would sit under the status card; keep
+    # them in the log file only. Warnings still show.
+    if level <= logging.INFO and _store.state == "alive":
+        level = logging.DEBUG
     log.log(level, msg, *args, extra={"tag": "LOGIN"})
 
 
@@ -511,7 +517,7 @@ class CookieStore:
             self._login_busy = login_busy
             if force:
                 self._force = True
-        # The extension re-pushes every minute even when nothing changed; only an
+        # The extension re-pushes every 30 s even when nothing changed; only an
         # actual change (or an explicit wake/resync) cuts the current wait short.
         if changed or force:
             self._event.set()
@@ -530,9 +536,11 @@ class CookieStore:
             return force
 
     # -- re-login --
-    def request_refresh(self, url: str) -> None:
+    def request_refresh(self, url: str, autofill: bool) -> None:
         with self._lock:
-            self._action = {"type": "refresh", "url": url}
+            # autofill: a saved login will be filled, so the extension goes ahead
+            # even if you have a CWL login page open yourself.
+            self._action = {"type": "refresh", "url": url, "autofill": autofill}
             self._refresh_result = None
 
     def take_action(self) -> dict | None:
@@ -555,6 +563,10 @@ class CookieStore:
         with self._lock:
             self._refresh_result = result
             self._creds_armed_until = 0.0
+            # Already confirmed logged in (a cookie change usually gets there
+            # first): no need to wake the loop for another ping.
+            if self.state == "alive":
+                return
             self._force = True
         self._event.set()
 
@@ -627,7 +639,7 @@ def _ago(seconds: float) -> str:
 # Re-login progress from the extension, shown in the console as it happens.
 EVENT_TEXT = {
     "refresh-opened": (logging.INFO, "Opened Elentra in a background tab."),
-    "refresh-skipped": (logging.INFO, "Skipped (you have a CWL login page open)."),
+    "refresh-skipped": (logging.INFO, "Skipped"),
     "refresh-elentra-page": (logging.DEBUG, "On an Elentra page."),
     "refresh-cwl-page": (logging.INFO, "Reached the CWL login page."),
     "refresh-other-page": (logging.WARNING, "Landed on an unexpected page."),
@@ -711,11 +723,13 @@ class _PushHandler(BaseHTTPRequestHandler):
         cookies = [c for c in cookies if is_elentra(c)]
         reason = str(payload.get("reason", "?"))[:20]
         login_busy = bool(payload.get("loginInProgress"))
-        _store.set(cookies, login_busy, force=reason in ("resume", "resync", "refresh-landed"))
+        _store.set(cookies, login_busy, force=reason in ("resume", "resync", "refresh-landed", "expired"))
         names = ", ".join(sorted({str(c.get("name", "?")) for c in cookies})) or "(none)"
         log.debug("Push (%s): %d cookie(s) [%s]%s", reason, len(cookies), names, " · CWL login page open" if login_busy else "")
         if reason == "resume":
             log.debug("Browser reports you're back — checking the session.")
+        elif reason == "expired":
+            log.debug("Browser saw Elentra send a tab to CWL — checking the session.")
         elif reason == "resync":
             log.info("Resync requested from the extension.")
 
@@ -745,6 +759,9 @@ class _PushHandler(BaseHTTPRequestHandler):
                 step(logging.WARNING, "Refused to fill the %s (not CWL's own form).", which)
             else:
                 step(logging.INFO, "Filled and submitted the %s (form: %s).", which, str(detail.get("form", "?"))[:120])
+        elif name == "refresh-cwl-page" and not (detail.get("hasPassword") or detail.get("hasUser")):
+            # No login form: CWL's auto-submitting hand-off back to Elentra (or a Duo/redirect step).
+            step(logging.INFO, "CWL sign-in done, handing back to Elentra.")
         elif name in EVENT_TEXT:
             level, msg = EVENT_TEXT[name]
             extra = detail.get("url") or detail.get("why") or detail.get("error") or ""
@@ -855,6 +872,17 @@ def check_session(session: requests.Session, url: str) -> tuple[str, list[str]]:
     return "alive", trail
 
 
+def summarize_trail(trail: list[str]) -> str:
+    """One short reason for the console; the full trail goes to the debug log."""
+    last = trail[-1] if trail else "?"
+    if last.startswith("redirect to") and last.endswith("(not followed)"):
+        return "redirect to CWL login" if IDP_HOST in last else f"redirect to {last.split()[2]}"
+    if last.endswith("(login page)"):
+        return "redirect to Elentra login page"
+    m = re.search(r"-> (\d{3})$", last)
+    return f"HTTP {m.group(1)}" if m else last
+
+
 def make_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -909,6 +937,7 @@ def run_auto_loop(args) -> int:
     last_check = 0.0  # monotonic, last ping while waiting
     attempts: list[float] = []  # monotonic start of each re-login attempt this spell
     attempt_open = False
+    attempt_no = 0  # number of the last attempt requested (attempts is cleared on success)
     last_note = ""
     force = True
     alive_since = 0.0  # wall clock, start of the current logged-in stretch
@@ -943,7 +972,7 @@ def run_auto_loop(args) -> int:
         result = _store.take_refresh_result()
         if result:
             attempt_open = False
-            log.debug("Re-login attempt %d ended: %s", len(attempts), result)
+            log.debug("Re-login attempt %d ended: %s", attempt_no, result)
             if result == "refresh-skipped" and attempts:
                 attempts.pop()  # user was logging in themselves; doesn't count
 
@@ -952,9 +981,12 @@ def run_auto_loop(args) -> int:
         sig = frozenset(flat.items())
         verdict = None
 
+        # With a usable saved login we log you in ourselves, so an open CWL page
+        # doesn't put things on hold.
+        autofill = bool(saved_login()) and not login_blocked()
         due = force or state != "waiting" or sig != dead_sig or time.monotonic() - last_check >= WAITING_RECHECK
         if SESSION_COOKIE in flat and due:
-            if _store.login_busy() and state == "waiting" and not force:
+            if _store.login_busy() and not autofill and state == "waiting" and not force:
                 note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", tag="LOGIN")
                 _store.wait(ACQUIRE_WAIT)
                 continue
@@ -1023,7 +1055,7 @@ def run_auto_loop(args) -> int:
         if verdict == "dead":
             dead_sig = sig
             args.cookie_file.unlink(missing_ok=True)
-            note(logging.INFO, f"Ping: not logged in ({' | '.join(trail)}).")
+            note(logging.INFO, f"Ping: not logged in ({summarize_trail(trail)}).")
 
         if state == "alive":
             _status("")
@@ -1040,20 +1072,20 @@ def run_auto_loop(args) -> int:
         if objs is None:
             note(logging.WARNING, "Waiting for the browser extension — is it loaded and enabled?")
         else:
-            maybe_refresh = objs or saved_login()
+            maybe_refresh = objs or autofill
             if attempt_open and time.monotonic() - attempts[-1] > REFRESH_WINDOW:
                 attempt_open = False
                 step(logging.WARNING, "Attempt %d: no result from the extension in time.", len(attempts))
             if not maybe_refresh:
                 note(logging.WARNING, "Waiting for you to log in to Elentra.")
-            elif _store.login_busy():
+            elif _store.login_busy() and not autofill:
                 note(logging.INFO, "CWL login page open in the browser — waiting for you to finish.", tag="LOGIN")
             elif not attempt_open and len(attempts) < len(REFRESH_BACKOFF):
                 since = time.monotonic() - attempts[-1] if attempts else float("inf")
                 if since >= REFRESH_BACKOFF[len(attempts)]:
                     attempts.append(time.monotonic())
-                    attempt_open = True
-                    _store.request_refresh(args.login_url)
+                    attempt_open, attempt_no = True, len(attempts)
+                    _store.request_refresh(args.login_url, autofill)
                     note(logging.WARNING, f"Not logged in — re-login attempt {len(attempts)}/{len(REFRESH_BACKOFF)} in a background tab...", tag="LOGIN")
             elif not attempt_open:
                 hint = "" if saved_login() else " (Tip: save your CWL login with the save-login launcher.)"
@@ -1067,7 +1099,7 @@ def run_auto_loop(args) -> int:
                     last_note = msg
             if attempt_open:
                 _set_title("🔄 Elentra · logging you back in…")
-            elif _store.login_busy():
+            elif _store.login_busy() and not autofill:
                 _set_title("🫠 Elentra · finishing your login…")
             else:
                 _set_title("🫠 Elentra · please log in")
